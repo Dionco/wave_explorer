@@ -1,0 +1,31 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
+*.egg
+
+# Virtual environments and local env files
+.env
+.venv/
+venv/
+env/
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Misc OS files
+.DS_Store
+Thumbs.db
+
+# Optional local runtime/cache folders
+.cache/
+instance/
