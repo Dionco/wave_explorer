@@ -773,3 +773,38 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ASAP Wave Explorer - Toast Notification Styles
+   Add this to the END of assets/styles.css
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Toast Notification (Added for save status feedback) ──── */
+.save-toast {
+    position: fixed;
+    top: 80px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-family: var(--mono-font);
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   End of Toast Notification Styles
+   ═══════════════════════════════════════════════════════════════ */

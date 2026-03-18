@@ -61,8 +61,12 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
     app.clientside_callback(
         """
         function(llEntries) {
+            var entries = llEntries || [];
+            // Expose globally so drag_handles.js can fall back to this
+            // if its own llEntries array hasn't been populated yet.
+            window.__asapLLEntries = entries;
             if (window.updateLLEntries) {
-                window.updateLLEntries(llEntries || []);
+                window.updateLLEntries(entries);
             }
             return window.dash_clientside ? window.dash_clientside.no_update : null;
         }

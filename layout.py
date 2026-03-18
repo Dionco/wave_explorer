@@ -474,6 +474,14 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
             ],
         ),
 
+        # ── Toast notification for save status ─────
+        html.Div(
+            id="save-status-toast",
+            style={"display": "none"},
+            className="save-toast",
+            children="",
+        ),
+
         # ── Status bar ─────────────────────────────────────────
         html.Div(className="status-bar", children=[
             html.Div(className="status-dot"),

@@ -1,11 +1,12 @@
 """
 Line List Region Callbacks (Boundary Dragging with Deferred Persistence)
+FIXED v2: Proper shape updates using Patch() instead of relayout
 """
 
 import re
 from typing import Optional
 
-from dash import Input, Output, State, callback, no_update, ctx
+from dash import Input, Output, State, callback, no_update, ctx, Patch
 
 from ..data_processing import save_line_list
 from pathlib import Path
@@ -83,8 +84,10 @@ def register_region_callbacks(app, dataset, min_w, max_w):
     # ════════════════════════════════════════════════════════════
     @callback(
         Output("ll-entries-store", "data"),
-        Output("pending-changes-store", "data"),
-        Output("unsaved-flag-store", "data"),
+        Output("pending-changes-store", "data", allow_duplicate=True),
+        Output("unsaved-flag-store", "data", allow_duplicate=True),
+        Output("save-status-toast", "children"),
+        Output("save-status-toast", "style"),
         Input("save-changes-btn", "n_clicks"),
         State("ll-entries-store", "data"),
         State("pending-changes-store", "data"),
@@ -97,9 +100,10 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         2. Persist to disk
         3. Clear pending changes
         4. Set unsaved_flag.has_changes = False
+        5. Show success/error toast
         """
         if not pending_changes or not ll_entries_data:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, "", {"display": "none"}
 
         # Merge pending into entries
         updated_entries = list(ll_entries_data)
@@ -114,19 +118,33 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         # Persist to disk
         try:
             save_line_list(Path(dataset["line_list"]), updated_entries)
+            toast_msg = f"✓ Saved {len(pending_changes)} region(s) to disk"
+            toast_style = {
+                "display": "block",
+                "background": "#0b2110",
+                "border": "1px solid #3fb950",
+                "color": "#3fb950",
+            }
         except OSError as e:
-            print(f"Warning: Failed to save line list: {e}")
-            return no_update, no_update, no_update
+            print(f"Error: Failed to save line list: {e}")
+            toast_msg = f"✗ Save failed: {str(e)}"
+            toast_style = {
+                "display": "block",
+                "background": "#2e0d0b",
+                "border": "1px solid #f85149",
+                "color": "#f85149",
+            }
+            return no_update, no_update, no_update, toast_msg, toast_style
 
         # Clear pending and reset flag
-        return updated_entries, {}, {"has_changes": False}
+        return updated_entries, {}, {"has_changes": False}, toast_msg, toast_style
 
     # ════════════════════════════════════════════════════════════
     # Callback – discard all pending changes
     # ════════════════════════════════════════════════════════════
     @callback(
-        Output("pending-changes-store", "data"),
-        Output("unsaved-flag-store", "data"),
+        Output("pending-changes-store", "data", allow_duplicate=True),
+        Output("unsaved-flag-store", "data", allow_duplicate=True),
         Input("discard-changes-btn", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -166,9 +184,10 @@ def register_region_callbacks(app, dataset, min_w, max_w):
 
     # ════════════════════════════════════════════════════════════
     # Callback – update figure shapes to show pending + saved regions
+    # FIXED v2: Now uses Patch() instead of relayout
     # ════════════════════════════════════════════════════════════
     @callback(
-        Output("spectrum-graph", "relayout"),
+        Output("spectrum-graph", "figure"),
         Input("ll-entries-store", "data"),
         Input("pending-changes-store", "data"),
     )
@@ -178,11 +197,15 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         - Saved regions (green, original style)
         - Pending edits (amber, higher opacity)
         
-        Uses relayout to update shapes without rebuilding entire figure.
+        Uses Patch() to update shapes without rebuilding entire figure.
         This preserves zoom/pan state and performance.
+        
+        FIXED v2: Uses Patch() on figure instead of invalid relayout output.
         """
         from ..theme import C
         
+        # Create a Patch object to modify only the shapes
+        patched_figure = Patch()
         shapes = []
         
         # Color & opacity constants
@@ -191,17 +214,31 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         pending_fill = "rgba(255, 167, 38, 0.25)"
         pending_line = "rgba(245, 130, 10, 0.95)"
         
-        # Build set of pending region indices for quick lookup
-        pending_indices = set(int(idx) for idx in pending_changes.keys()) if pending_changes else set()
+        # Build pending changes lookup by index
+        pending_by_idx = {}
+        if pending_changes:
+            for idx_str, entry in pending_changes.items():
+                try:
+                    pending_by_idx[int(idx_str)] = entry
+                except (ValueError, TypeError):
+                    continue
         
         # Add shapes for each region
         if ll_entries:
             for idx, entry in enumerate(ll_entries):
-                lower = float(entry["lower"])
-                upper = float(entry["upper"])
+                # CRITICAL FIX: Use pending bounds if available, otherwise use saved bounds
+                if idx in pending_by_idx:
+                    # This region has pending changes - use the pending values
+                    active_entry = pending_by_idx[idx]
+                    is_pending = True
+                else:
+                    # No pending changes - use saved values
+                    active_entry = entry
+                    is_pending = False
                 
-                # Determine if this region has pending changes
-                is_pending = idx in pending_indices
+                lower = float(active_entry["lower"])
+                upper = float(active_entry["upper"])
+                
                 fill_color = pending_fill if is_pending else saved_fill
                 line_color = pending_line if is_pending else saved_line
                 
@@ -225,5 +262,7 @@ def register_region_callbacks(app, dataset, min_w, max_w):
                     editable=False,
                 ))
         
-        # Return relayout dict to update shapes only
-        return {"shapes": shapes}
+        # Use Patch to update only the shapes
+        patched_figure["layout"]["shapes"] = shapes
+        
+        return patched_figure
