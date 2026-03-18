@@ -100,11 +100,15 @@ def register_region_callbacks(app, dataset, min_w, max_w):
     @app.callback(
         Output("pending-changes-store", "data", allow_duplicate=True),
         Output("unsaved-flag-store", "data", allow_duplicate=True),
+        Output("discard-signal-store", "data"),
         Input("discard-changes-btn", "n_clicks"),
+        State("ll-entries-store", "data"),
         prevent_initial_call=True,
     )
-    def discard_pending_changes(n_clicks):
-        return {}, {"has_changes": False}
+    def discard_pending_changes(n_clicks, ll_entries_data):
+        # n_clicks doubles as a counter — any new value triggers the JS callback.
+        # ll_entries_data is passed through so the JS can reset to saved positions.
+        return {}, {"has_changes": False}, {"tick": n_clicks, "entries": ll_entries_data}
 
     # ════════════════════════════════════════════════════════════
     # Callback – pending status badge visibility

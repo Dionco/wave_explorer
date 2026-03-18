@@ -476,6 +476,33 @@
     debugLog('updateLLEntries', { count: llEntries.length });
   };
 
+  /**
+   * Reset every LL region shape to its saved (ll-entries-store) coordinates.
+   * Called after Discard: the server Patch only fixes colours; this fixes
+   * the positions that were moved by Plotly.relayout() during drag.
+   */
+  window.resetShapesToEntries = function (entries) {
+    var graph = getGraphDiv();
+    if (!graph || typeof Plotly === 'undefined' || !entries || !entries.length) return;
+
+    var update = {};
+    entries.forEach(function (entry, i) {
+      var base  = i * SHAPES_PER_REGION;
+      var lo    = parseFloat(entry.lower);
+      var hi    = parseFloat(entry.upper);
+      update['shapes[' + base       + '].x0'] = lo;
+      update['shapes[' + base       + '].x1'] = hi;
+      update['shapes[' + (base + 1) + '].x0'] = lo;
+      update['shapes[' + (base + 1) + '].x1'] = hi;
+    });
+
+    Plotly.relayout(graph, update);
+
+    // Also reset the in-memory mirror so hit-test uses correct positions.
+    llEntries = entries.map(function (e) { return Object.assign({}, e); });
+    debugLog('resetShapesToEntries', { count: entries.length });
+  };
+
   window.updateHoveredRegion = function (hoverSync) {
     const ridx = hoverSync && hoverSync.region_idx;
     if (ridx == null) { if (!dragState.active) activeEntryIdx = null; return; }

@@ -69,7 +69,36 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
         Input("ll-entries-store", "data"),
     )
 
-    # ── Clientside callback: sync hover region to drag_handles.js ────────────
+    # ── Clientside callback: discard reset ───────────────────────────────────
+    # When the user clicks Discard, the Python callback emits the saved
+    # ll-entries data via discard-signal-store.  This JS callback:
+    #   1. Resets window.llEntries mirror to the saved positions
+    #   2. Calls window.resetShapesToEntries() which calls Plotly.relayout()
+    #      to move all shape edges back to their saved coordinates.
+    # This is necessary because Plotly.relayout() during drag is browser-only —
+    # the server never sees those position changes, so its Patch() only updates
+    # colours, not coordinates.
+    app.clientside_callback(
+        """
+        function(discardSignal) {
+            if (!discardSignal || !discardSignal.entries) {
+                return window.dash_clientside
+                    ? window.dash_clientside.no_update : null;
+            }
+            var entries = discardSignal.entries;
+            window.__llEntriesData = entries;
+            if (window.updateLLEntries)      window.updateLLEntries(entries);
+            if (window.resetShapesToEntries) window.resetShapesToEntries(entries);
+            return window.dash_clientside
+                ? window.dash_clientside.no_update : null;
+        }
+        """,
+        Output("handles-sync-store", "data", allow_duplicate=True),
+        Input("discard-signal-store", "data"),
+        prevent_initial_call=True,
+    )
+
+
     app.clientside_callback(
         """
         function(hoverData, llStatsStore) {

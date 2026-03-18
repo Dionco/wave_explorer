@@ -395,6 +395,7 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
         dcc.Store(id="handles-hover-sync-store",   data=None),
         dcc.Store(id="pending-changes-store",      data={}),
         dcc.Store(id="unsaved-flag-store",         data={"has_changes": False}),
+        dcc.Store(id="discard-signal-store",       data=0),
 
         # ── Cursor tooltip ─────────────────────────────────────────────────
         html.Div(id="cursor-tooltip", style={
