@@ -6,22 +6,33 @@
  * 2. Click-drag-to-draw new region mode via SVG overlay
  * 3. Confirmation popover for new regions
  *
- * FIX NOTES:
- * - llEntries was silently empty at mousedown time if the Dash clientside
- *   callback that calls window.updateLLEntries() hadn't fired yet.
- *   Now we also check window.__asapLLEntries (set by app.py's clientside CB)
- *   as an immediate fallback.
- * - Added verbose WE_DEBUG output so the exact failure reason is visible.
+ * STARTUP RACE FIX
+ * ─────────────────
+ * Dash fires the clientside callback that supplies ll-entries data almost
+ * immediately after the page loads — often before this script has finished
+ * executing.  The old code did:
+ *
+ *   if (window.updateLLEntries) { window.updateLLEntries(entries); }
+ *
+ * …which silently dropped the data when this script hadn't loaded yet.
+ * Because ll-entries-store only changes again on an explicit Save, llEntries
+ * stayed empty for the entire session.
+ *
+ * The fix is a two-part handshake:
+ *   • app.py always writes entries to window.__llEntriesData (a plain global).
+ *   • init() reads window.__llEntriesData after defining window.updateLLEntries.
+ *
+ * Whichever side runs first, the data is never lost.
  */
 
-(function () {
+(function() {
   'use strict';
 
   const EDGE_HIT_TOLERANCE_PX = 16;
   const MIN_GAP_NM = 0.001;
-  const PREVIEW_FILL   = 'rgba(255, 167, 38, 0.20)';
+  const PREVIEW_FILL = 'rgba(255, 167, 38, 0.20)';
   const PREVIEW_STROKE = 'rgba(245, 130, 10, 0.95)';
-  const DRAG_PREVIEW_FILL   = 'rgba(88, 209, 235, 0.20)';
+  const DRAG_PREVIEW_FILL = 'rgba(88, 209, 235, 0.20)';
   const DRAG_PREVIEW_STROKE = 'rgba(88, 209, 235, 0.95)';
 
   let llEntries = [];
@@ -33,7 +44,7 @@
   let dragState = {
     active: false,
     regionIdx: null,
-    bound: null,       // 'lower' | 'upper'
+    bound: null, // 'lower' or 'upper'
     currentNm: null,
   };
 
@@ -54,14 +65,16 @@
     row2Edge: null,
   };
 
-  // ── Debug ─────────────────────────────────────────────────────────────────
+  // ── Debug logging ──────────────────────────────────────────────────────────
 
   function debugLog() {
     if (!window.WE_DEBUG) return;
-    try { console.log('[wave_explorer edge-drag]', ...arguments); } catch (_) {}
+    try {
+      console.log('[wave_explorer edge-drag]', ...arguments);
+    } catch (e) { /* no-op */ }
   }
 
-  // ── Graph helpers ─────────────────────────────────────────────────────────
+  // ── Plotly graph accessors ─────────────────────────────────────────────────
 
   function getGraphHost() {
     return document.getElementById('spectrum-graph');
@@ -89,55 +102,18 @@
   }
 
   function pixelToNm(px) {
-    const b = getPlotBounds();
-    if (!b || !b.xaxis || !b.xaxis.p2l) return null;
-    return b.xaxis.p2l(px);
+    const bounds = getPlotBounds();
+    if (!bounds || !bounds.xaxis || !bounds.xaxis.p2l) return null;
+    return bounds.xaxis.p2l(px);
   }
 
   function nmToPixel(nm) {
-    const b = getPlotBounds();
-    if (!b || !b.xaxis || !b.xaxis.l2p) return null;
-    return b.xaxis.l2p(nm);
+    const bounds = getPlotBounds();
+    if (!bounds || !bounds.xaxis || !bounds.xaxis.l2p) return null;
+    return bounds.xaxis.l2p(nm);
   }
 
-  function getPlotRectPixels(bounds) {
-    const p = bounds.plot;
-    return {
-      left:   p.margin.l,
-      top:    p.margin.t,
-      width:  p.width  - p.margin.l - p.margin.r,
-      height: p.height - p.margin.t - p.margin.b,
-    };
-  }
-
-  function isCursorInsidePlotArea(graphRect, plotRect, clientX, clientY) {
-    const x = clientX - graphRect.left;
-    const y = clientY - graphRect.top;
-    return (
-      x >= plotRect.left &&
-      x <= plotRect.left + plotRect.width &&
-      y >= plotRect.top  &&
-      y <= plotRect.top  + plotRect.height
-    );
-  }
-
-  // ── Entry access (with fallback) ──────────────────────────────────────────
-  //
-  // app.py's clientside callback sets window.__asapLLEntries immediately when
-  // the ll-entries-store updates.  We use that as a fallback so dragging works
-  // even if window.updateLLEntries() hasn't been called yet.
-
-  function getEffectiveLLEntries() {
-    if (llEntries.length > 0) return llEntries;
-    if (window.__asapLLEntries && window.__asapLLEntries.length > 0) {
-      debugLog('using window.__asapLLEntries fallback, count:', window.__asapLLEntries.length);
-      llEntries = window.__asapLLEntries;
-      return llEntries;
-    }
-    return [];
-  }
-
-  // ── Clamping ──────────────────────────────────────────────────────────────
+  // ── Geometry helpers ───────────────────────────────────────────────────────
 
   function clampDraggedNm(entry, bound, candidateNm) {
     if (!entry || !Number.isFinite(candidateNm)) return null;
@@ -149,37 +125,41 @@
     return null;
   }
 
-  // ── Edge hit detection ────────────────────────────────────────────────────
+  function getPlotRectPixels(bounds) {
+    const plot = bounds.plot;
+    return {
+      left:   plot.margin.l,
+      top:    plot.margin.t,
+      width:  plot.width  - plot.margin.l - plot.margin.r,
+      height: plot.height - plot.margin.t - plot.margin.b,
+    };
+  }
+
+  function isCursorInsidePlotArea(graphRect, plotRect, clientX, clientY) {
+    const x = clientX - graphRect.left;
+    const y = clientY - graphRect.top;
+    return x >= plotRect.left && x <= (plotRect.left + plotRect.width) &&
+           y >= plotRect.top  && y <= (plotRect.top  + plotRect.height);
+  }
 
   function findNearestEdgeFromEvent(evt) {
-    const entries = getEffectiveLLEntries();
-
-    if (!entries.length) {
-      debugLog('findNearestEdge: llEntries is EMPTY — drag cannot start. ' +
-               'Ensure window.updateLLEntries() has been called.');
+    if (!llEntries.length) {
+      debugLog('findNearestEdge: llEntries is EMPTY — drag cannot start. Ensure window.updateLLEntries() has been called.');
       return null;
     }
 
     const bounds = getPlotBounds();
-    if (!bounds) {
-      debugLog('findNearestEdge: getPlotBounds() returned null');
-      return null;
-    }
+    if (!bounds) return null;
 
     const graphRect = bounds.graph.getBoundingClientRect();
     const plotRect  = getPlotRectPixels(bounds);
-
-    if (!isCursorInsidePlotArea(graphRect, plotRect, evt.clientX, evt.clientY)) {
-      debugLog('findNearestEdge: cursor outside plot area');
-      return null;
-    }
+    if (!isCursorInsidePlotArea(graphRect, plotRect, evt.clientX, evt.clientY)) return null;
 
     const cursorXInGraph = evt.clientX - graphRect.left;
-    debugLog('findNearestEdge: checking', entries.length, 'entries, cursorX=', cursorXInGraph.toFixed(1));
-
     let best = null;
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+
+    for (let i = 0; i < llEntries.length; i++) {
+      const entry = llEntries[i];
       if (!entry) continue;
 
       const loPx = nmToPixel(parseFloat(entry.lower));
@@ -188,9 +168,8 @@
 
       const loAbsPx = plotRect.left + loPx;
       const hiAbsPx = plotRect.left + hiPx;
-
-      const loDist = Math.abs(cursorXInGraph - loAbsPx);
-      const hiDist = Math.abs(cursorXInGraph - hiAbsPx);
+      const loDist  = Math.abs(cursorXInGraph - loAbsPx);
+      const hiDist  = Math.abs(cursorXInGraph - hiAbsPx);
 
       if (loDist <= EDGE_HIT_TOLERANCE_PX && (!best || loDist < best.distancePx)) {
         best = { regionIdx: i, bound: 'lower', distancePx: loDist };
@@ -201,19 +180,16 @@
     }
 
     if (best) {
-      debugLog('edge hit ✓', {
+      debugLog('edge hit', {
         regionIdx: best.regionIdx,
-        bound:     best.bound,
+        bound: best.bound,
         distancePx: Number(best.distancePx.toFixed(2)),
       });
-    } else {
-      debugLog('findNearestEdge: no edge within', EDGE_HIT_TOLERANCE_PX, 'px tolerance');
     }
-
     return best;
   }
 
-  // ── SVG drag-preview layer ────────────────────────────────────────────────
+  // ── SVG drag preview ───────────────────────────────────────────────────────
 
   function getDragOverlaySvg() {
     return document.getElementById('drag-handles-svg');
@@ -229,7 +205,6 @@
 
   function ensureDragPreviewLayer() {
     if (dragPreview.layer) return dragPreview.layer;
-
     const svg = getDragOverlaySvg();
     if (!svg) return null;
 
@@ -238,33 +213,31 @@
     layer.style.display = 'none';
     layer.style.pointerEvents = 'none';
 
-    const makeRect = function () {
-      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      r.setAttribute('fill',         DRAG_PREVIEW_FILL);
-      r.setAttribute('stroke',       DRAG_PREVIEW_STROKE);
-      r.setAttribute('stroke-width', '1.5');
-      return r;
+    const makeRect = () => {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('fill', DRAG_PREVIEW_FILL);
+      rect.setAttribute('stroke', DRAG_PREVIEW_STROKE);
+      rect.setAttribute('stroke-width', '1.5');
+      return rect;
     };
 
-    const makeLine = function () {
-      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      l.setAttribute('stroke',        DRAG_PREVIEW_STROKE);
-      l.setAttribute('stroke-width',  '2');
-      l.setAttribute('stroke-linecap','round');
-      return l;
+    const makeEdge = () => {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('stroke', DRAG_PREVIEW_STROKE);
+      line.setAttribute('stroke-width', '2');
+      line.setAttribute('stroke-linecap', 'round');
+      return line;
     };
 
     dragPreview.row1Rect = makeRect();
     dragPreview.row2Rect = makeRect();
-    dragPreview.row1Edge = makeLine();
-    dragPreview.row2Edge = makeLine();
-
+    dragPreview.row1Edge = makeEdge();
+    dragPreview.row2Edge = makeEdge();
     layer.appendChild(dragPreview.row1Rect);
     layer.appendChild(dragPreview.row2Rect);
     layer.appendChild(dragPreview.row1Edge);
     layer.appendChild(dragPreview.row2Edge);
     svg.appendChild(layer);
-
     dragPreview.layer = layer;
     return layer;
   }
@@ -276,12 +249,10 @@
   function updateDragPreview(regionIdx, bound, newNm) {
     const bounds = getPlotBounds();
     if (!bounds) return;
-
     const layer = ensureDragPreviewLayer();
     if (!layer) return;
 
-    const entries = getEffectiveLLEntries();
-    const entry   = entries[regionIdx];
+    const entry = llEntries[regionIdx];
     if (!entry) return;
 
     const baseLo = parseFloat(entry.lower);
@@ -307,41 +278,27 @@
     const row1Band = getAxisBandPx(plotRect, bounds.yaxis);
     const row2Band = getAxisBandPx(plotRect, bounds.yaxis2);
 
-    function applyRect(rect, band) {
-      rect.setAttribute('x',      x0);
-      rect.setAttribute('y',      band.y);
-      rect.setAttribute('width',  w);
+    const applyRect = (rect, band) => {
+      rect.setAttribute('x', x0);
+      rect.setAttribute('y', band.y);
+      rect.setAttribute('width', w);
       rect.setAttribute('height', band.height);
-    }
-
-    function applyLine(line, band) {
+    };
+    const applyLine = (line, band) => {
       line.setAttribute('x1', edgeX);
       line.setAttribute('x2', edgeX);
       line.setAttribute('y1', band.y);
       line.setAttribute('y2', band.y + band.height);
-    }
+    };
 
     applyRect(dragPreview.row1Rect, row1Band);
     applyRect(dragPreview.row2Rect, row2Band);
     applyLine(dragPreview.row1Edge, row1Band);
     applyLine(dragPreview.row2Edge, row2Band);
-
     layer.style.display = 'block';
   }
 
-  // ── Cursor styling ────────────────────────────────────────────────────────
-
-  function applyGraphCursor(cursor) {
-    const graph = getGraphDiv();
-    const host  = getGraphHost();
-    if (graph) {
-      graph.style.cursor = cursor;
-      graph.querySelectorAll('.draglayer, .nsewdrag, .main-svg').forEach(function (el) {
-        el.style.cursor = cursor;
-      });
-    }
-    if (host) host.style.cursor = cursor;
-  }
+  // ── Cursor management ──────────────────────────────────────────────────────
 
   function setEdgeHoverCursor(evt) {
     if (drawState.active || dragState.active) return;
@@ -349,21 +306,26 @@
     applyGraphCursor(target ? 'col-resize' : '');
   }
 
-  // ── Mouse event handlers ──────────────────────────────────────────────────
+  function applyGraphCursor(cursor) {
+    const graph = getGraphDiv();
+    const host  = getGraphHost();
+    if (graph) {
+      graph.style.cursor = cursor;
+      graph.querySelectorAll('.draglayer, .nsewdrag, .main-svg').forEach(el => {
+        el.style.cursor = cursor;
+      });
+    }
+    if (host) host.style.cursor = cursor;
+  }
+
+  // ── Mouse event handlers ───────────────────────────────────────────────────
 
   function onDocumentMouseDown(evt) {
     if (drawState.active) return;
-
-    const entries = getEffectiveLLEntries();
-    if (!entries.length) {
-      debugLog('mousedown: llEntries empty, skipping edge detection');
-      return;
-    }
-
     const hit = findNearestEdgeFromEvent(evt);
     if (!hit) return;
 
-    const entry = entries[hit.regionIdx];
+    const entry = llEntries[hit.regionIdx];
     if (!entry) return;
 
     const initialNm = parseFloat(hit.bound === 'lower' ? entry.lower : entry.upper);
@@ -374,9 +336,9 @@
     dragState.bound     = hit.bound;
     dragState.currentNm = initialNm;
     activeEntryIdx      = hit.regionIdx;
-
     applyGraphCursor('col-resize');
-    debugLog('edge drag start', { regionIdx: hit.regionIdx, bound: hit.bound, initialNm });
+
+    debugLog('edge drag start', { regionIdx: hit.regionIdx, bound: hit.bound });
     updateDragPreview(hit.regionIdx, hit.bound, initialNm);
 
     evt.preventDefault();
@@ -392,20 +354,18 @@
     const bounds = getPlotBounds();
     if (!bounds) return;
 
-    const graphRect = bounds.graph.getBoundingClientRect();
-    const plotRect  = getPlotRectPixels(bounds);
-    const relX      = (evt.clientX - graphRect.left) - plotRect.left;
+    const graphRect  = bounds.graph.getBoundingClientRect();
+    const plotRect   = getPlotRectPixels(bounds);
+    const relX       = (evt.clientX - graphRect.left) - plotRect.left;
     const candidateNm = pixelToNm(relX);
     if (!Number.isFinite(candidateNm)) return;
 
-    const entries  = getEffectiveLLEntries();
-    const entry    = entries[dragState.regionIdx];
+    const entry     = llEntries[dragState.regionIdx];
     const clampedNm = clampDraggedNm(entry, dragState.bound, candidateNm);
     if (!Number.isFinite(clampedNm)) return;
 
     dragState.currentNm = clampedNm;
     updateDragPreview(dragState.regionIdx, dragState.bound, clampedNm);
-
     evt.preventDefault();
   }
 
@@ -418,13 +378,10 @@
 
     dragState = { active: false, regionIdx: null, bound: null, currentNm: null };
 
-    debugLog('edge drag end', { regionIdx, bound, newNm });
-
     if (Number.isFinite(newNm) &&
-        window.dash_clientside &&
-        window.dash_clientside.set_props) {
+        window.dash_clientside && window.dash_clientside.set_props) {
       window.dash_clientside.set_props('drag-result-store', {
-        data: { region_idx: regionIdx, bound: bound, new_x_nm: newNm }
+        data: { region_idx: regionIdx, bound, new_x_nm: newNm },
       });
     }
 
@@ -433,7 +390,7 @@
     setEdgeHoverCursor(evt);
   }
 
-  // ── SVG overlay (draw-mode) ───────────────────────────────────────────────
+  // ── SVG draw mode ──────────────────────────────────────────────────────────
 
   function initSvg() {
     const overlay = document.getElementById('drag-handles-overlay');
@@ -461,22 +418,20 @@
 
   function onSvgMouseDown(evt) {
     if (!drawState.active) return;
-
     const bounds = getPlotBounds();
     if (!bounds) return;
 
     const plotRect  = getPlotRectPixels(bounds);
     const graphRect = bounds.graph.getBoundingClientRect();
-    const absX = evt.clientX - graphRect.left;
-    const relX = absX - plotRect.left;
-    const nm   = pixelToNm(relX);
+    const absX  = evt.clientX - graphRect.left;
+    const relX  = absX - plotRect.left;
+    const nm    = pixelToNm(relX);
     if (!Number.isFinite(nm)) return;
 
     drawState.startX  = absX;
     drawState.startNm = nm;
     drawState.endX    = absX;
     drawState.endNm   = nm;
-
     evt.preventDefault();
   }
 
@@ -489,9 +444,9 @@
 
     const plotRect  = getPlotRectPixels(bounds);
     const graphRect = bounds.graph.getBoundingClientRect();
-    const absX = evt.clientX - graphRect.left;
-    const relX = absX - plotRect.left;
-    const nm   = pixelToNm(relX);
+    const absX  = evt.clientX - graphRect.left;
+    const relX  = absX - plotRect.left;
+    const nm    = pixelToNm(relX);
     if (!Number.isFinite(nm)) return;
 
     drawState.endX  = absX;
@@ -505,14 +460,12 @@
 
     const lo = Math.min(drawState.startX, drawState.endX);
     const hi = Math.max(drawState.startX, drawState.endX);
-    const vbHeight = (svg.getAttribute('viewBox') || '').split(' ')[3] || '100%';
-
-    drawState.previewRect.setAttribute('x',            lo);
-    drawState.previewRect.setAttribute('y',            0);
-    drawState.previewRect.setAttribute('width',        hi - lo);
-    drawState.previewRect.setAttribute('height',       vbHeight);
-    drawState.previewRect.setAttribute('fill',         PREVIEW_FILL);
-    drawState.previewRect.setAttribute('stroke',       PREVIEW_STROKE);
+    drawState.previewRect.setAttribute('x', lo);
+    drawState.previewRect.setAttribute('y', 0);
+    drawState.previewRect.setAttribute('width', hi - lo);
+    drawState.previewRect.setAttribute('height', svg.getAttribute('viewBox')?.split(' ')[3] || '100%');
+    drawState.previewRect.setAttribute('fill', PREVIEW_FILL);
+    drawState.previewRect.setAttribute('stroke', PREVIEW_STROKE);
     drawState.previewRect.setAttribute('stroke-width', '2');
   }
 
@@ -525,12 +478,10 @@
     const popover = document.getElementById('draw-confirm-popover');
     if (popover) {
       const rangeText = document.getElementById('draw-confirm-range-text');
-      if (rangeText) {
-        rangeText.textContent = lo.toFixed(3) + ' \u2013 ' + hi.toFixed(3) + ' nm';
-      }
+      if (rangeText) rangeText.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm`;
       popover.style.display = 'block';
-      popover.style.left    = drawState.endX + 'px';
-      popover.style.top     = (evt.clientY - 40) + 'px';
+      popover.style.left    = `${drawState.endX}px`;
+      popover.style.top     = `${evt.clientY - 40}px`;
       popover.setAttribute('data-lo', lo);
       popover.setAttribute('data-hi', hi);
     }
@@ -540,7 +491,10 @@
       drawState.previewRect = null;
     }
 
-    drawState = { active: false, startX: null, startNm: null, endX: null, endNm: null, previewRect: null };
+    drawState = {
+      active: false, startX: null, startNm: null,
+      endX: null, endNm: null, previewRect: null,
+    };
   }
 
   function onSvgMouseLeave() {
@@ -550,14 +504,14 @@
     }
   }
 
-  // ── Popover buttons ───────────────────────────────────────────────────────
+  // ── Confirmation popover buttons ───────────────────────────────────────────
 
   function setupPopoverButtons() {
     const acceptBtn = document.getElementById('draw-confirm-accept');
     const cancelBtn = document.getElementById('draw-confirm-cancel');
 
     if (acceptBtn) {
-      acceptBtn.addEventListener('click', function () {
+      acceptBtn.addEventListener('click', () => {
         const popover = document.getElementById('draw-confirm-popover');
         if (!popover) return;
         const lo = parseFloat(popover.getAttribute('data-lo'));
@@ -571,14 +525,14 @@
     }
 
     if (cancelBtn) {
-      cancelBtn.addEventListener('click', function () {
+      cancelBtn.addEventListener('click', () => {
         const popover = document.getElementById('draw-confirm-popover');
         if (popover) popover.style.display = 'none';
       });
     }
   }
 
-  // ── Plotly listeners ──────────────────────────────────────────────────────
+  // ── Plotly event hooks ─────────────────────────────────────────────────────
 
   function onPlotlyAfterPlot() {
     debugLog('plotly_afterplot');
@@ -590,9 +544,8 @@
     const raw    = Array.isArray(point.customdata) ? point.customdata[0] : point.customdata;
     const parsed = parseInt(raw, 10);
     if (!Number.isFinite(parsed)) return;
-    const entries = getEffectiveLLEntries();
-    const idx = (parsed >= 1 && parsed <= entries.length) ? parsed - 1 : parsed;
-    activeEntryIdx = (idx >= 0 && idx < entries.length) ? idx : null;
+    const idx      = (parsed >= 1 && parsed <= llEntries.length) ? parsed - 1 : parsed;
+    activeEntryIdx = (idx >= 0 && idx < llEntries.length) ? idx : null;
   }
 
   function onPlotlyUnhover() {
@@ -602,20 +555,18 @@
   function attachPlotlyListeners(attempt) {
     const graph = getGraphDiv();
     if (!graph || typeof graph.on !== 'function') {
-      if (attempt < 60) setTimeout(function () { attachPlotlyListeners(attempt + 1); }, 200);
+      if (attempt < 60) setTimeout(() => attachPlotlyListeners(attempt + 1), 200);
       return;
     }
     if (plotlyListenersBound) return;
-
     graph.on('plotly_afterplot', onPlotlyAfterPlot);
     graph.on('plotly_relayout',  onPlotlyAfterPlot);
     graph.on('plotly_hover',     onPlotlyHover);
     graph.on('plotly_unhover',   onPlotlyUnhover);
     plotlyListenersBound = true;
-    debugLog('Plotly listeners bound');
   }
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Initialisation ─────────────────────────────────────────────────────────
 
   function init() {
     const graphHost = getGraphHost();
@@ -627,19 +578,30 @@
     initSvg();
     setupPopoverButtons();
 
-    document.addEventListener('mousemove', function (evt) {
+    document.addEventListener('mousemove', (evt) => {
       lastMouseClientX = evt.clientX;
       lastMouseClientY = evt.clientY;
       onDocumentDragMove(evt);
     }, { passive: false, capture: true });
 
-    // Capture phase fires before Plotly's zoom-drag handlers
     document.addEventListener('mousedown', onDocumentMouseDown, true);
     document.addEventListener('mouseup',   onDocumentDragUp,    true);
 
     attachPlotlyListeners(0);
 
-    debugLog('drag_handles init complete');
+    // ── STARTUP RACE FIX ──────────────────────────────────────────────────
+    // The Dash clientside callback that calls window.updateLLEntries() fires
+    // early in the page lifecycle — often before this script has run.
+    // app.py always caches the entries in window.__llEntriesData first.
+    // We read it here so we never miss the initial payload.
+    if (window.__llEntriesData && window.__llEntriesData.length) {
+      llEntries = window.__llEntriesData;
+      debugLog('init: loaded llEntries from __llEntriesData cache', {
+        count: llEntries.length,
+      });
+    } else {
+      debugLog('init: __llEntriesData not ready yet — will be set by updateLLEntries()');
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -648,33 +610,26 @@
     init();
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  // ── Public API (called by Dash clientside callbacks) ───────────────────────
 
-  /**
-   * Called by Dash clientside callback when ll-entries-store changes.
-   * Also writes to window.__asapLLEntries so drag works immediately on
-   * first interaction even if this function hasn't been called yet.
-   */
-  window.updateLLEntries = function (entries) {
+  window.updateLLEntries = function(entries) {
     llEntries = entries || [];
-    window.__asapLLEntries = llEntries;   // global fallback
-    debugLog('updateLLEntries, count:', llEntries.length);
+    debugLog('updateLLEntries', { count: llEntries.length });
   };
 
-  window.updateHoveredRegion = function (hoverSync) {
+  window.updateHoveredRegion = function(hoverSync) {
     const ridx = hoverSync && hoverSync.region_idx;
     if (ridx === null || ridx === undefined) {
       if (!dragState.active) activeEntryIdx = null;
       return;
     }
-    const parsed  = parseInt(ridx, 10);
+    const parsed = parseInt(ridx, 10);
     if (!Number.isFinite(parsed)) return;
-    const entries = getEffectiveLLEntries();
-    const idx     = (parsed >= 1 && parsed <= entries.length) ? parsed - 1 : parsed;
-    activeEntryIdx = (idx >= 0 && idx < entries.length) ? idx : null;
+    const idx      = (parsed >= 1 && parsed <= llEntries.length) ? parsed - 1 : parsed;
+    activeEntryIdx = (idx >= 0 && idx < llEntries.length) ? idx : null;
   };
 
-  window.activateDrawMode = function (active) {
+  window.activateDrawMode = function(active) {
     drawState.active = !!active;
     const svg = document.getElementById('drag-handles-svg');
     if (svg) svg.style.pointerEvents = active ? 'auto' : 'none';
@@ -682,7 +637,6 @@
       dragState = { active: false, regionIdx: null, bound: null, currentNm: null };
       hideDragPreview();
     }
-    debugLog('draw mode', active ? 'ON' : 'OFF');
   };
 
 })();
