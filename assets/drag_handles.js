@@ -257,6 +257,17 @@
     const { regionIdx, bound, currentNm: newNm } = dragState;
     dragState = { active: false, regionIdx: null, bound: null, currentNm: null };
 
+    // Update the local JS mirror so findNearestEdgeFromEvent() immediately
+    // uses the new position — without this the hit-test stays locked to the
+    // original coordinates and the ghost edge becomes the only draggable target.
+    if (Number.isFinite(newNm) && llEntries[regionIdx]) {
+      llEntries[regionIdx][bound] = newNm;
+      llEntries[regionIdx].center = 0.5 * (
+        parseFloat(llEntries[regionIdx].lower) +
+        parseFloat(llEntries[regionIdx].upper)
+      );
+    }
+
     // Write to Dash store → Python marks region pending → figure redraws amber.
     if (Number.isFinite(newNm) &&
         window.dash_clientside && window.dash_clientside.set_props) {
