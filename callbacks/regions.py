@@ -1,23 +1,23 @@
 """
 Line List Region Callbacks (Boundary Dragging with Deferred Persistence)
 
-Deliberately owns NO figure output. All shape rendering is handled by
-update_figure_shapes() in candidate.py, which is the single owner of
-spectrum-graph.figure.
+Uses @app.callback (instance-scoped) throughout, NOT the global @callback.
+The global decorator re-registers on Dash hot-reload, producing duplicate
+output errors. @app.callback is scoped to the app instance and is safe.
 """
 
 from pathlib import Path
 
-from dash import Input, Output, State, callback, no_update
+from dash import Input, Output, State, no_update
 
 
 def register_region_callbacks(app, dataset, min_w, max_w):
     """Register line-list region boundary dragging callbacks."""
 
     # ════════════════════════════════════════════════════════════
-    # Callback – edge drag results accumulate in pending-changes
+    # Callback – edge drag → accumulate in pending-changes-store
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("pending-changes-store", "data"),
         Output("unsaved-flag-store", "data"),
         Input("drag-result-store", "data"),
@@ -26,13 +26,6 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         prevent_initial_call=True,
     )
     def update_ll_bounds_from_drag(drag_result, ll_entries_data, pending_changes):
-        """
-        On boundary drag release, accumulate changes in pending-changes-store
-        but do NOT save to disk yet.
-
-        drag_result: {region_idx, bound: "lower"|"upper", new_x_nm}
-        pending_changes: {str(region_idx): {lower, upper, center, element, ion}}
-        """
         if not drag_result or not ll_entries_data:
             return no_update, no_update
 
@@ -42,13 +35,10 @@ def register_region_callbacks(app, dataset, min_w, max_w):
 
         if region_idx is None or bound is None or new_x is None:
             return no_update, no_update
-
         if region_idx < 0 or region_idx >= len(ll_entries_data):
             return no_update, no_update
 
-        # Start from pending state if one already exists for this region.
-        entry = dict(pending_changes.get(str(region_idx), ll_entries_data[region_idx]))
-
+        entry   = dict(pending_changes.get(str(region_idx), ll_entries_data[region_idx]))
         lower   = float(entry["lower"])
         upper   = float(entry["upper"])
         min_gap = 0.001
@@ -65,70 +55,61 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         entry["upper"]  = float(upper)
         entry["center"] = 0.5 * (lower + upper)
 
-        updated_pending = dict(pending_changes)
-        updated_pending[str(region_idx)] = entry
-
-        return updated_pending, {"has_changes": True}
+        updated = dict(pending_changes)
+        updated[str(region_idx)] = entry
+        return updated, {"has_changes": True}
 
     # ════════════════════════════════════════════════════════════
-    # Callback – save all pending changes to disk and ll-entries
+    # Callback – save pending changes to disk
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("ll-entries-store", "data"),
-        Output("pending-changes-store", "data"),
-        Output("unsaved-flag-store", "data"),
+        Output("pending-changes-store", "data", allow_duplicate=True),
+        Output("unsaved-flag-store", "data", allow_duplicate=True),
         Input("save-changes-btn", "n_clicks"),
         State("ll-entries-store", "data"),
         State("pending-changes-store", "data"),
         prevent_initial_call=True,
     )
     def apply_pending_changes(n_clicks, ll_entries_data, pending_changes):
-        """
-        On 'Save Changes' click:
-        1. Merge pending changes into ll-entries-store
-        2. Persist to disk
-        3. Clear pending changes
-        4. Set unsaved_flag.has_changes = False
-        """
         from ..data_processing import save_line_list
 
         if not pending_changes or not ll_entries_data:
             return no_update, no_update, no_update
 
-        updated_entries = list(ll_entries_data)
-        for idx_str, pending_entry in pending_changes.items():
+        updated = list(ll_entries_data)
+        for idx_str, entry in pending_changes.items():
             try:
                 idx = int(idx_str)
-                if 0 <= idx < len(updated_entries):
-                    updated_entries[idx] = pending_entry
+                if 0 <= idx < len(updated):
+                    updated[idx] = entry
             except (ValueError, KeyError):
                 continue
 
         try:
-            save_line_list(Path(dataset["line_list"]), updated_entries)
+            save_line_list(Path(dataset["line_list"]), updated)
         except OSError as e:
             print(f"Warning: Failed to save line list: {e}")
             return no_update, no_update, no_update
 
-        return updated_entries, {}, {"has_changes": False}
+        return updated, {}, {"has_changes": False}
 
     # ════════════════════════════════════════════════════════════
-    # Callback – discard all pending changes
+    # Callback – discard pending changes
     # ════════════════════════════════════════════════════════════
-    @callback(
-        Output("pending-changes-store", "data"),
-        Output("unsaved-flag-store", "data"),
+    @app.callback(
+        Output("pending-changes-store", "data", allow_duplicate=True),
+        Output("unsaved-flag-store", "data", allow_duplicate=True),
         Input("discard-changes-btn", "n_clicks"),
         prevent_initial_call=True,
     )
     def discard_pending_changes(n_clicks):
-        """Clear pending changes without touching ll-entries-store."""
         return {}, {"has_changes": False}
 
     # ════════════════════════════════════════════════════════════
-    # Callback – pending status UI (badge + button visibility)
+    # Callback – pending status badge visibility
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("pending-status-container", "style"),
         Output("pending-count", "children"),
         Input("unsaved-flag-store", "data"),

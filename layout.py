@@ -2,6 +2,7 @@
 ASAP Layout & UI Component Builders
 """
 
+import json
 from pathlib import Path
 from typing import List
 
@@ -16,7 +17,6 @@ from .theme import C, MONO, SANS, _fmt, chi2_color, chi2_label, chi2_pct
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_header(dataset: dict) -> html.Div:
-    """Top navigation bar with suffix, star count, wavelength range."""
     w = dataset["common_w"]
     return html.Div(className="asap-header", children=[
         html.Div(className="asap-wordmark", children=[
@@ -37,7 +37,6 @@ def build_header(dataset: dict) -> html.Div:
             "ll regions ", html.Span(str(len(dataset["ll_entries"])), className="hc-val")
         ]),
         html.Div(className="h-spacer"),
-        # Pending changes indicator + save/discard buttons
         html.Div(
             id="pending-status-container",
             className="pending-status-container",
@@ -47,9 +46,9 @@ def build_header(dataset: dict) -> html.Div:
                     "⚠ ", html.Span(id="pending-count", children="0"), " pending"
                 ]),
                 html.Button("✓ Save Changes", id="save-changes-btn", n_clicks=0,
-                           className="btn btn-sm btn-green"),
+                            className="btn btn-sm btn-green"),
                 html.Button("✕ Discard", id="discard-changes-btn", n_clicks=0,
-                           className="btn btn-sm btn-danger"),
+                            className="btn btn-sm btn-danger"),
             ],
         ),
         html.Div(className="h-chip", style={"maxWidth": "340px", "overflow": "hidden",
@@ -63,18 +62,13 @@ def build_header(dataset: dict) -> html.Div:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_candidate_panel(min_w: float, max_w: float, init_lo: float, init_hi: float) -> html.Div:
-    """Control panel for candidate region selection."""
     return html.Div(className="card", children=[
         html.Div("Candidate Region", className="card-title"),
-
-        # Action buttons
         html.Div(className="btn-row", children=[
             html.Button("⊕  Use Zoom", id="use-zoom-btn", n_clicks=0, className="btn btn-cyan"),
             html.Button("→  Apply Manual", id="apply-manual-btn", n_clicks=0, className="btn btn-amber"),
             html.Button("＋  Add to Session", id="add-session-btn", n_clicks=0, className="btn btn-green"),
         ]),
-
-        # Range slider
         html.Div([
             html.Div("Wavelength Range (nm)", className="form-label",
                      style={"marginBottom": "12px"}),
@@ -82,12 +76,15 @@ def build_candidate_panel(min_w: float, max_w: float, init_lo: float, init_hi: f
                 id="candidate-range",
                 min=min_w, max=max_w,
                 value=[init_lo, init_hi],
-                step=0.001, allowCross=False, updatemode="mouseup",
-                tooltip={"placement": "bottom"},
+                # step=0.001 over a ~600 nm range = 600,000 discrete positions,
+                # which causes React's Range component to blow the call stack.
+                # Use step=0.1 here; manual inputs below still give 0.001 precision.
+                step=0.1,
+                allowCross=False,
+                updatemode="mouseup",
+                tooltip={"placement": "bottom", "always_visible": False},
             ),
         ], style={"marginBottom": "16px"}),
-
-        # Manual inputs
         html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "10px",
                         "marginBottom": "4px"}, children=[
             html.Div([
@@ -101,8 +98,6 @@ def build_candidate_panel(min_w: float, max_w: float, init_lo: float, init_hi: f
                           className="form-input"),
             ]),
         ]),
-
-        # Source hint
         html.Div(id="src-hint", className="src-hint none", children="—"),
     ])
 
@@ -112,7 +107,6 @@ def build_candidate_panel(min_w: float, max_w: float, init_lo: float, init_hi: f
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_stats_panel() -> html.Div:
-    """Live statistics display for current candidate."""
     return html.Div(className="card", children=[
         html.Div("Live Statistics", className="card-title"),
         html.Div(id="candidate-stats"),
@@ -120,14 +114,12 @@ def build_stats_panel() -> html.Div:
 
 
 def render_stats(chi2: dict, resid: dict, lo: float, hi: float) -> html.Div:
-    """Render stats DOM for a wavelength range."""
-    c2     = chi2["median_chi2"]
-    color  = chi2_color(c2)
-    label  = chi2_label(c2)
-    pct    = chi2_pct(c2)
+    c2    = chi2["median_chi2"]
+    color = chi2_color(c2)
+    label = chi2_label(c2)
+    pct   = chi2_pct(c2)
 
     return html.Div([
-        # Range banner
         html.Div(
             f"λ  {lo:.3f} – {hi:.3f} nm  ·  Δλ = {hi-lo:.3f} nm",
             style={"fontFamily": MONO, "fontSize": "11px", "color": C["muted"],
@@ -135,7 +127,6 @@ def render_stats(chi2: dict, resid: dict, lo: float, hi: float) -> html.Div:
                    "padding": "6px 10px", "borderRadius": "5px",
                    "border": f"1px solid {C['border2']}"},
         ),
-        # chi2 big stat + bar
         html.Div(className="stat-grid", children=[
             html.Div(className="stat-block", children=[
                 html.Div("χ²/N  median", className="stat-key"),
@@ -174,8 +165,6 @@ def render_stats(chi2: dict, resid: dict, lo: float, hi: float) -> html.Div:
                 ]),
             ]),
         ]),
-
-        # Residual metrics
         html.Div(className="div"),
         html.Div("Residual diagnostics", style={
             "fontFamily": MONO, "fontSize": "10px", "letterSpacing": "0.1em",
@@ -207,27 +196,18 @@ def render_stats(chi2: dict, resid: dict, lo: float, hi: float) -> html.Div:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Table Panel (Worst Regions)
+# Table Panel
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_table_panel(region_summary: List[dict], unique_elements: List[str]) -> html.Div:
-    """Ranked table of poorly-fitted regions."""
     elem_options = [{"label": "All elements", "value": "ALL"}] + [
         {"label": e, "value": e} for e in unique_elements
     ]
-
     header_row = html.Tr([
-        html.Th("#"),
-        html.Th("Center (nm)"),
-        html.Th("Range (nm)"),
-        html.Th("Species"),
-        html.Th("χ²/N med"),
-        html.Th("Quality"),
-        html.Th("N★"),
-        html.Th("N pix"),
-        html.Th(""),
+        html.Th("#"), html.Th("Center (nm)"), html.Th("Range (nm)"),
+        html.Th("Species"), html.Th("χ²/N med"), html.Th("Quality"),
+        html.Th("N★"), html.Th("N pix"), html.Th(""),
     ])
-
     body_rows = []
     for i, row in enumerate(region_summary[:50]):
         col = chi2_color(row["med_chi2"])
@@ -243,25 +223,17 @@ def build_table_panel(region_summary: List[dict], unique_elements: List[str]) ->
                                      "border": f"1px solid {col}55"})),
             html.Td(str(row["n_stars"])),
             html.Td(str(row["med_npix"])),
-            html.Td(
-                html.Button("→", id={"type": "nav-btn", "index": i},
-                            n_clicks=0, className="btn btn-xs btn-cyan"),
-            ),
+            html.Td(html.Button("→", id={"type": "nav-btn", "index": i},
+                                n_clicks=0, className="btn btn-xs btn-cyan")),
         ]))
-
     return html.Div(className="card gap-lg", children=[
         html.Div(style={"display": "flex", "alignItems": "center",
                         "justifyContent": "space-between", "marginBottom": "12px"}, children=[
             html.Div("Worst Fitted Regions  (top 50 by median χ²/N)", className="card-title",
                      style={"marginBottom": 0, "borderBottom": "none", "paddingBottom": 0}),
             html.Div(style={"width": "200px"}, children=[
-                dcc.Dropdown(
-                    id="elem-filter",
-                    options=elem_options,
-                    value="ALL",
-                    clearable=False,
-                    style={"fontSize": "12px"},
-                ),
+                dcc.Dropdown(id="elem-filter", options=elem_options, value="ALL",
+                             clearable=False, style={"fontSize": "12px"}),
             ]),
         ]),
         html.Div(className="table-wrap", children=[
@@ -278,7 +250,6 @@ def build_table_panel(region_summary: List[dict], unique_elements: List[str]) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_session_panel() -> html.Div:
-    """Session candidate log and export."""
     return html.Div(className="card", children=[
         html.Div(style={"display": "flex", "alignItems": "center",
                         "justifyContent": "space-between", "marginBottom": "12px"}, children=[
@@ -302,7 +273,6 @@ def build_session_panel() -> html.Div:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div:
-    """Assemble the full app layout."""
     min_w  = float(dataset["common_w"][0])
     max_w  = float(dataset["common_w"][-1])
     init_lo = min_w
@@ -311,42 +281,55 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
     unique_elements = sorted({e["element"] for e in dataset["region_summary"]})
     all_rows        = dataset["region_summary"]
 
-    # Convert ll_hover_stats to JSON-serializable format for client-side access
     ll_stats_jsonable = [
         {
-            "region_idx": int(rs["region_idx"]),
-            "lower": float(rs["lower"]),
-            "upper": float(rs["upper"]),
-            "center": float(rs["center"]),
-            "element": str(rs["element"]),
-            "ion": str(rs["ion"]),
-            "med_chi2": float(rs["med_chi2"]) if np.isfinite(rs["med_chi2"]) else None,
-            "n_stars": int(rs["n_stars"]),
-            "med_npix": int(rs["med_npix"]),
-            "mean_resid": float(rs["mean_resid"]) if np.isfinite(rs["mean_resid"]) else None,
-            "mean_abs_resid": float(rs["mean_abs_resid"]) if np.isfinite(rs["mean_abs_resid"]) else None,
-            "p95_abs_resid": float(rs["p95_abs_resid"]) if np.isfinite(rs["p95_abs_resid"]) else None,
+            "region_idx":      int(rs["region_idx"]),
+            "lower":           float(rs["lower"]),
+            "upper":           float(rs["upper"]),
+            "center":          float(rs["center"]),
+            "element":         str(rs["element"]),
+            "ion":             str(rs["ion"]),
+            "med_chi2":        float(rs["med_chi2"]) if np.isfinite(rs["med_chi2"]) else None,
+            "n_stars":         int(rs["n_stars"]),
+            "med_npix":        int(rs["med_npix"]),
+            "mean_resid":      float(rs["mean_resid"]) if np.isfinite(rs["mean_resid"]) else None,
+            "mean_abs_resid":  float(rs["mean_abs_resid"]) if np.isfinite(rs["mean_abs_resid"]) else None,
+            "p95_abs_resid":   float(rs["p95_abs_resid"]) if np.isfinite(rs["p95_abs_resid"]) else None,
             "mean_norm_resid": float(rs["mean_norm_resid"]) if np.isfinite(rs["mean_norm_resid"]) else None,
         }
         for rs in dataset["ll_hover_stats"]
     ]
 
-    # Convert ll_entries to JSON-serializable format
     ll_entries_jsonable = [
         {
-            "center": float(e["center"]),
-            "lower": float(e["lower"]),
-            "upper": float(e["upper"]),
+            "center":  float(e["center"]),
+            "lower":   float(e["lower"]),
+            "upper":   float(e["upper"]),
             "element": str(e["element"]),
-            "ion": str(e["ion"]),
+            "ion":     str(e["ion"]),
         }
         for e in dataset["ll_entries"]
     ]
 
+    # ── Inline bootstrap script ───────────────────────────────────────────────
+    # Embed ll-entries and ll-stats as plain JS globals in the HTML itself.
+    # This is synchronous — it runs before any asset script loads, so
+    # drag_handles.js and tooltip.js can always read it on init(), with zero
+    # dependency on the Dash callback pipeline or timing.
+    inline_script = (
+        f"window.__llEntriesData = {json.dumps(ll_entries_jsonable)};\n"
+        f"window.__llStatsData   = {json.dumps(ll_stats_jsonable)};"
+    )
+
     return html.Div([
+
+        # ── Synchronous data bootstrap (must be first child) ──────────────────
+        html.Script(inline_script, type="text/javascript"),
+
         build_header(dataset),
         html.Div(className="asap-main", children=[
-            # ── Spectrum plot + interaction overlay ─────────────
+
+            # ── Spectrum plot ────────────────────────────────────────────────
             html.Div(className="plot-wrap gap-md", style={"position": "relative"}, children=[
                 dcc.Graph(
                     id="spectrum-graph",
@@ -361,28 +344,23 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                     },
                     style={"height": "820px"},
                 ),
-                # SVG overlay for draw-mode preview/popover UI (rendered in drag_handles.js)
                 html.Div(
                     id="drag-handles-overlay",
                     style={
-                        "position": "absolute",
-                        "top": "0",
-                        "left": "0",
-                        "right": "0",
-                        "bottom": "0",
-                        "pointerEvents": "none",
-                        "zIndex": "10",
+                        "position": "absolute", "top": "0", "left": "0",
+                        "right": "0", "bottom": "0",
+                        "pointerEvents": "none", "zIndex": "10",
                     },
                 ),
             ]),
 
-            # ── Candidate + Stats row ──────────────────────────
+            # ── Candidate + Stats ────────────────────────────────────────────
             html.Div(className="two-col gap-md", children=[
                 build_candidate_panel(min_w, max_w, init_lo, init_hi),
                 build_stats_panel(),
             ]),
 
-            # ── Table + Session row ────────────────────────────
+            # ── Table + Session ──────────────────────────────────────────────
             html.Div(className="two-col gap-md", children=[
                 build_table_panel(all_rows, unique_elements),
                 build_session_panel(),
@@ -393,96 +371,60 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                 style={"display": "block" if debug_hover else "none"},
                 children=[
                     html.Div("Hover Debug", className="card-title"),
-                    html.Pre(
-                        id="debug-hover-log",
-                        style={
-                            "maxHeight": "220px",
-                            "overflowY": "auto",
-                            "fontFamily": MONO,
-                            "fontSize": "11px",
-                            "color": C["text"],
-                            "background": C["bg"],
-                            "border": f"1px solid {C['border2']}",
-                            "borderRadius": "6px",
-                            "padding": "10px",
-                            "whiteSpace": "pre-wrap",
-                        },
-                    ),
+                    html.Pre(id="debug-hover-log", style={
+                        "maxHeight": "220px", "overflowY": "auto",
+                        "fontFamily": MONO, "fontSize": "11px",
+                        "color": C["text"], "background": C["bg"],
+                        "border": f"1px solid {C['border2']}",
+                        "borderRadius": "6px", "padding": "10px",
+                        "whiteSpace": "pre-wrap",
+                    }),
                 ],
             ),
         ]),
 
-        # ── Hidden state stores ────────────────────────────────
-        dcc.Store(id="session-store", data=[]),
-        dcc.Store(id="source-type",   data="none"),
-        dcc.Store(id="ll-entries-store", data=ll_entries_jsonable),
-        dcc.Store(id="ll-stats-store", data=ll_stats_jsonable),
-        dcc.Store(id="drag-result-store", data=None),
-        dcc.Store(id="draw-region-store", data=None),
-        dcc.Store(id="tooltip-sync-store", data=None),
-        dcc.Store(id="handles-sync-store", data=None),
-        dcc.Store(id="handles-hover-sync-store", data=None),
-        # Pending changes state
-        dcc.Store(id="pending-changes-store", data={}),
-        dcc.Store(id="unsaved-flag-store", data={"has_changes": False}),
+        # ── Hidden state stores ────────────────────────────────────────────
+        dcc.Store(id="session-store",              data=[]),
+        dcc.Store(id="source-type",                data="none"),
+        dcc.Store(id="ll-entries-store",           data=ll_entries_jsonable),
+        dcc.Store(id="ll-stats-store",             data=ll_stats_jsonable),
+        dcc.Store(id="drag-result-store",          data=None),
+        dcc.Store(id="draw-region-store",          data=None),
+        dcc.Store(id="tooltip-sync-store",         data=None),
+        dcc.Store(id="handles-sync-store",         data=None),
+        dcc.Store(id="handles-hover-sync-store",   data=None),
+        dcc.Store(id="pending-changes-store",      data={}),
+        dcc.Store(id="unsaved-flag-store",         data={"has_changes": False}),
 
-        # ── Cursor tooltip (hidden by default, positioned fixed) ─
-        html.Div(
-            id="cursor-tooltip",
-            style={
-                "display": "none",
-                "position": "fixed",
-                "backgroundColor": C["surf2"],
-                "border": f"1px solid {C['border']}",
-                "borderRadius": "6px",
-                "padding": "8px 12px",
-                "fontSize": "11px",
-                "fontFamily": MONO,
-                "color": C["text"],
-                "zIndex": "1000",
-                "maxWidth": "280px",
-                "boxShadow": "0 4px 12px rgba(0,0,0,0.4)",
-                "pointerEvents": "none",
-            },
-        ),
+        # ── Cursor tooltip ─────────────────────────────────────────────────
+        html.Div(id="cursor-tooltip", style={
+            "display": "none", "position": "fixed",
+            "backgroundColor": C["surf2"], "border": f"1px solid {C['border']}",
+            "borderRadius": "6px", "padding": "8px 12px",
+            "fontSize": "11px", "fontFamily": MONO, "color": C["text"],
+            "zIndex": "1000", "maxWidth": "280px",
+            "boxShadow": "0 4px 12px rgba(0,0,0,0.4)", "pointerEvents": "none",
+        }),
 
-        # ── Confirmation popover (hidden by default) ───────────
-        html.Div(
-            id="draw-confirm-popover",
-            style={
-                "display": "none",
-                "position": "fixed",
-                "backgroundColor": C["surf"],
-                "border": f"2px solid {C['amber']}",
-                "borderRadius": "8px",
-                "padding": "12px 16px",
-                "zIndex": "999",
-                "boxShadow": "0 6px 20px rgba(0,0,0,0.5)",
-            },
-            children=[
-                html.Div("Add this region?", style={"marginBottom": "10px", "fontWeight": "bold"}),
-                html.Div(id="draw-confirm-range-text", style={"fontSize": "12px", "marginBottom": "12px"}),
-                html.Div(
-                    style={"display": "flex", "gap": "8px"},
-                    children=[
-                        html.Button("✓ Accept", id="draw-confirm-accept", n_clicks=0,
-                                   className="btn btn-sm btn-green"),
-                        html.Button("✕ Cancel", id="draw-confirm-cancel", n_clicks=0,
-                                   className="btn btn-sm btn-danger"),
-                    ],
-                ),
-            ],
-        ),
+        # ── Draw-region confirmation popover ───────────────────────────────
+        html.Div(id="draw-confirm-popover", style={
+            "display": "none", "position": "fixed",
+            "backgroundColor": C["surf"], "border": f"2px solid {C['amber']}",
+            "borderRadius": "8px", "padding": "12px 16px",
+            "zIndex": "999", "boxShadow": "0 6px 20px rgba(0,0,0,0.5)",
+        }, children=[
+            html.Div("Add this region?", style={"marginBottom": "10px", "fontWeight": "bold"}),
+            html.Div(id="draw-confirm-range-text",
+                     style={"fontSize": "12px", "marginBottom": "12px"}),
+            html.Div(style={"display": "flex", "gap": "8px"}, children=[
+                html.Button("✓ Accept", id="draw-confirm-accept", n_clicks=0,
+                            className="btn btn-sm btn-green"),
+                html.Button("✕ Cancel", id="draw-confirm-cancel", n_clicks=0,
+                            className="btn btn-sm btn-danger"),
+            ]),
+        ]),
 
-        # ── Toast notification for save status ─────
-        html.Div(
-            id="save-status-toast",
-            style={"display": "none"},
-            className="save-toast",
-            children="",
-        ),
-
-        # ── Status bar ─────────────────────────────────────────
+        # ── Status bar ─────────────────────────────────────────────────────
         html.Div(className="status-bar", children=[
             html.Div(className="status-dot"),
             html.Span(f"ASAP  ·  {dataset['suffix']}  ·  {dataset['n_stars']} stars",

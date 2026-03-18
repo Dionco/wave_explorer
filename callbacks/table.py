@@ -1,10 +1,13 @@
 """
 Table Filtering Callbacks
+
+Uses @app.callback (instance-scoped) to prevent duplicate registration
+on Dash hot-reload.
 """
 
-from dash import Input, Output, callback, html
+from dash import Input, Output, html
 
-from ..theme import C, chi2_color, chi2_label
+from ..theme import chi2_color, chi2_label
 
 
 def register_table_callbacks(app, dataset):
@@ -12,10 +15,7 @@ def register_table_callbacks(app, dataset):
 
     all_rows = dataset["region_summary"]
 
-    # ════════════════════════════════════════════════════════════
-    # Callback – element filter for table body
-    # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("table-body", "children"),
         Input("elem-filter", "value"),
     )
@@ -25,9 +25,8 @@ def register_table_callbacks(app, dataset):
         ]
         body_rows = []
         for i, row in enumerate(rows[:50]):
-            col = chi2_color(row["med_chi2"])
-            lbl = chi2_label(row["med_chi2"])
-            # Use index in all_rows for nav btn to keep navigation correct
+            col      = chi2_color(row["med_chi2"])
+            lbl      = chi2_label(row["med_chi2"])
             real_idx = all_rows.index(row) if row in all_rows else i
             body_rows.append(html.Tr(id={"type": "region-row", "index": real_idx}, children=[
                 html.Td(f"{i+1}", className="rank-num"),
@@ -40,9 +39,7 @@ def register_table_callbacks(app, dataset):
                                          "border": f"1px solid {col}55"})),
                 html.Td(str(row["n_stars"])),
                 html.Td(str(row["med_npix"])),
-                html.Td(
-                    html.Button("→", id={"type": "nav-btn", "index": real_idx},
-                                n_clicks=0, className="btn btn-xs btn-cyan"),
-                ),
+                html.Td(html.Button("→", id={"type": "nav-btn", "index": real_idx},
+                                    n_clicks=0, className="btn btn-xs btn-cyan")),
             ]))
         return body_rows

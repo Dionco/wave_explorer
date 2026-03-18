@@ -1,9 +1,14 @@
 """
 Session Management Callbacks (Add, Clear, Export)
+
+Uses @app.callback (instance-scoped) to prevent duplicate registration
+on Dash hot-reload.
 """
 
 import numpy as np
-from dash import Input, Output, State, callback, ctx, dcc, no_update
+from dash import Input, Output, State, no_update
+from dash import ctx as dash_ctx
+from dash import dcc, html
 
 from ..data_processing import compute_custom_region_chi2
 
@@ -14,7 +19,7 @@ def register_session_callbacks(app, dataset):
     # ════════════════════════════════════════════════════════════
     # Callback – add/clear session entries
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("session-store", "data"),
         Input("add-session-btn", "n_clicks"),
         Input("clear-session-btn", "n_clicks"),
@@ -23,20 +28,19 @@ def register_session_callbacks(app, dataset):
         prevent_initial_call=True,
     )
     def manage_session(add_clicks, clear_clicks, cand_range, session_data):
-        tid = ctx.triggered_id
+        tid = dash_ctx.triggered_id
         if tid == "clear-session-btn":
             return []
         if tid == "add-session-btn" and cand_range and len(cand_range) == 2:
             lo, hi = float(cand_range[0]), float(cand_range[1])
-            chi2 = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
-            entry = dict(
+            chi2   = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
+            entry  = dict(
                 lo=round(lo, 4), hi=round(hi, 4),
                 width=round(hi - lo, 4),
                 chi2=round(chi2["median_chi2"], 3) if np.isfinite(chi2["median_chi2"]) else None,
                 n_stars=chi2["n_stars"],
                 label="",
             )
-            # Avoid exact duplicates
             existing = {(r["lo"], r["hi"]) for r in session_data}
             if (entry["lo"], entry["hi"]) not in existing:
                 return session_data + [entry]
@@ -45,16 +49,16 @@ def register_session_callbacks(app, dataset):
     # ════════════════════════════════════════════════════════════
     # Callback – render session log
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("session-log", "children"),
         Input("session-store", "data"),
     )
     def render_session(session_data):
-        from dash import html
         from ..theme import C, chi2_color
-        
+
         if not session_data:
             return [html.Div("No candidates added yet.", className="log-empty")]
+
         items = []
         for i, r in enumerate(session_data):
             c2val = r.get("chi2")
@@ -65,8 +69,7 @@ def register_session_callbacks(app, dataset):
                                                 "flexShrink": "0"}),
                 html.Span(f"{r['lo']:.3f} – {r['hi']:.3f} nm", className="log-range"),
                 html.Span(f"Δ{r['width']:.3f}", className="log-elem"),
-                html.Span(f"χ² {c2str}", className="log-chi",
-                          style={"color": c2col}),
+                html.Span(f"χ² {c2str}", className="log-chi", style={"color": c2col}),
                 html.Span(f"{r['n_stars']} ★",
                           style={"color": C["dim"], "fontSize": "10px"}),
             ]))
@@ -75,7 +78,7 @@ def register_session_callbacks(app, dataset):
     # ════════════════════════════════════════════════════════════
     # Callback – export session as line-list file
     # ════════════════════════════════════════════════════════════
-    @callback(
+    @app.callback(
         Output("download-session", "data"),
         Input("export-btn", "n_clicks"),
         State("session-store", "data"),
