@@ -33,11 +33,16 @@ def register_session_callbacks(app, dataset):
             return []
         if tid == "add-session-btn" and cand_range and len(cand_range) == 2:
             lo, hi = float(cand_range[0]), float(cand_range[1])
-            chi2   = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
-            entry  = dict(
-                lo=round(lo, 4), hi=round(hi, 4),
+            chi2 = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
+            entry = dict(
+                lo=round(lo, 4),
+                hi=round(hi, 4),
                 width=round(hi - lo, 4),
-                chi2=round(chi2["median_chi2"], 3) if np.isfinite(chi2["median_chi2"]) else None,
+                chi2=(
+                    round(chi2["median_chi2"], 3)
+                    if np.isfinite(chi2["median_chi2"])
+                    else None
+                ),
                 n_stars=chi2["n_stars"],
                 label="",
             )
@@ -64,15 +69,32 @@ def register_session_callbacks(app, dataset):
             c2val = r.get("chi2")
             c2str = f"{c2val:.3f}" if c2val is not None else "—"
             c2col = chi2_color(c2val if c2val is not None else np.nan)
-            items.append(html.Div(className="log-item", children=[
-                html.Span(f"{i+1:02d}", style={"color": C["dim"], "width": "20px",
-                                                "flexShrink": "0"}),
-                html.Span(f"{r['lo']:.3f} – {r['hi']:.3f} nm", className="log-range"),
-                html.Span(f"Δ{r['width']:.3f}", className="log-elem"),
-                html.Span(f"χ² {c2str}", className="log-chi", style={"color": c2col}),
-                html.Span(f"{r['n_stars']} ★",
-                          style={"color": C["dim"], "fontSize": "10px"}),
-            ]))
+            items.append(
+                html.Div(
+                    className="log-item",
+                    children=[
+                        html.Span(
+                            f"{i+1:02d}",
+                            style={
+                                "color": C["dim"],
+                                "width": "20px",
+                                "flexShrink": "0",
+                            },
+                        ),
+                        html.Span(
+                            f"{r['lo']:.3f} – {r['hi']:.3f} nm", className="log-range"
+                        ),
+                        html.Span(f"Δ{r['width']:.3f}", className="log-elem"),
+                        html.Span(
+                            f"χ² {c2str}", className="log-chi", style={"color": c2col}
+                        ),
+                        html.Span(
+                            f"{r['n_stars']} ★",
+                            style={"color": C["dim"], "fontSize": "10px"},
+                        ),
+                    ],
+                )
+            )
         return items
 
     # ════════════════════════════════════════════════════════════

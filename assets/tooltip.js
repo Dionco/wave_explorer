@@ -1,94 +1,117 @@
 /**
  * ASAP Cursor-Tracking Tooltip
  *
- * Reads window.__llStatsData (embedded inline in the HTML by layout.py)
- * on init — no dependency on the Dash callback pipeline or timing.
+ * Reads ll-stats from the Dash clientside callback or from the
+ * window.__llStatsData cache written by the ll-entries sync callback.
  */
 
-(function() {
-  'use strict';
+(function () {
+  "use strict";
 
-  let lastCursorX = 0;
-  let lastCursorY = 0;
-  let llStats     = [];
+  var lastCursorX = 0;
+  var lastCursorY = 0;
+  var llStats = [];
 
   function debugLog() {
     if (!window.WE_DEBUG) return;
-    try { console.log('[wave_explorer tooltip]', ...arguments); } catch (e) {}
+    try {
+      console.log("[wave_explorer tooltip]", ...arguments);
+    } catch (e) {
+      /* ignore */
+    }
   }
 
   function getGraphDiv() {
-    const host = document.getElementById('spectrum-graph');
+    var host = document.getElementById("spectrum-graph");
     if (!host) return null;
-    if (typeof host.on === 'function' && host._fullLayout) return host;
-    const inner = host.querySelector('.js-plotly-plot');
-    if (inner && typeof inner.on === 'function') return inner;
-    return (typeof host.on === 'function') ? host : null;
+    if (typeof host.on === "function" && host._fullLayout) return host;
+    var inner = host.querySelector(".js-plotly-plot");
+    if (inner && typeof inner.on === "function") return inner;
+    return typeof host.on === "function" ? host : null;
   }
 
   function formatValue(v, decimals, fallback) {
-    if (v === null || v === undefined || isNaN(v)) return fallback || '—';
+    if (v === null || v === undefined || isNaN(v)) return fallback || "\u2014";
     return parseFloat(v).toFixed(decimals);
   }
 
-  // ── Tooltip render ─────────────────────────────────────────────────────────
+  // -- Tooltip render -------------------------------------------------------
 
   function updateTooltip(regionIdx) {
-    const tooltip = document.getElementById('cursor-tooltip');
+    var tooltip = document.getElementById("cursor-tooltip");
     if (!tooltip) return;
 
     if (regionIdx === null || regionIdx === undefined) {
-      tooltip.style.display = 'none';
+      tooltip.style.display = "none";
       return;
     }
 
-    const stat = llStats.find(s => s.region_idx === regionIdx);
+    var stat = llStats.find(function (s) {
+      return s.region_idx === regionIdx;
+    });
     if (!stat) {
-      tooltip.style.display = 'none';
+      tooltip.style.display = "none";
       return;
     }
 
-    const chi2Str = stat.med_chi2 !== null && stat.med_chi2 !== undefined
-      ? formatValue(stat.med_chi2, 3) : '—';
+    var chi2Str =
+      stat.med_chi2 !== null && stat.med_chi2 !== undefined
+        ? formatValue(stat.med_chi2, 3)
+        : "\u2014";
 
-    tooltip.innerHTML = `
-      <div style="font-weight:bold;color:#58d1eb;margin-bottom:4px">
-        Region #${stat.region_idx}
-      </div>
-      <div style="font-size:10px;line-height:1.5">
-        <div>λ ${formatValue(stat.lower, 3)} – ${formatValue(stat.upper, 3)} nm</div>
-        <div>Center: ${formatValue(stat.center, 3)} nm</div>
-        <div style="border-top:1px solid rgba(88,209,235,0.3);margin:4px 0;padding-top:4px">
-          <div>χ²/N: ${chi2Str}</div>
-          <div>Stars: ${stat.n_stars || 0}</div>
-          <div>Median pix: ${stat.med_npix || 0}</div>
-        </div>
-      </div>`;
+    tooltip.innerHTML =
+      '<div style="font-weight:bold;color:#58d1eb;margin-bottom:4px">' +
+      "Region #" +
+      stat.region_idx +
+      "</div>" +
+      '<div style="font-size:10px;line-height:1.5">' +
+      "<div>\u03bb " +
+      formatValue(stat.lower, 3) +
+      " \u2013 " +
+      formatValue(stat.upper, 3) +
+      " nm</div>" +
+      "<div>Center: " +
+      formatValue(stat.center, 3) +
+      " nm</div>" +
+      '<div style="border-top:1px solid rgba(88,209,235,0.3);margin:4px 0;padding-top:4px">' +
+      "<div>\u03c7\u00b2/N: " +
+      chi2Str +
+      "</div>" +
+      "<div>Stars: " +
+      (stat.n_stars || 0) +
+      "</div>" +
+      "<div>Median pix: " +
+      (stat.med_npix || 0) +
+      "</div>" +
+      "</div></div>";
 
-    tooltip.style.display = 'block';
-    tooltip.style.left    = (lastCursorX + 14) + 'px';
-    tooltip.style.top     = (lastCursorY - 40) + 'px';
+    tooltip.style.display = "block";
+    tooltip.style.left = lastCursorX + 14 + "px";
+    tooltip.style.top = lastCursorY - 40 + "px";
   }
 
-  // ── Mouse tracking ─────────────────────────────────────────────────────────
+  // -- Mouse tracking -------------------------------------------------------
 
   function setupMouseTracking() {
-    document.addEventListener('mousemove', (evt) => {
+    document.addEventListener("mousemove", function (evt) {
       lastCursorX = evt.clientX;
       lastCursorY = evt.clientY;
-      const tooltip = document.getElementById('cursor-tooltip');
-      if (tooltip && tooltip.style.display !== 'none') {
-        tooltip.style.left = (lastCursorX + 14) + 'px';
-        tooltip.style.top  = (lastCursorY - 40) + 'px';
+      var tooltip = document.getElementById("cursor-tooltip");
+      if (tooltip && tooltip.style.display !== "none") {
+        tooltip.style.left = lastCursorX + 14 + "px";
+        tooltip.style.top = lastCursorY - 40 + "px";
       }
     });
   }
 
-  // ── Dash clientside callback (still works when called, but no longer required) ──
+  // -- Dash clientside callback ---------------------------------------------
 
   window.dash_clientside = window.dash_clientside || {};
 
-  window.dash_clientside.show_region_tooltip = function(hoverData, llStatsStore) {
+  window.dash_clientside.show_region_tooltip = function (
+    hoverData,
+    llStatsStore
+  ) {
     // Update local cache if the Dash store provides fresher data.
     if (llStatsStore && llStatsStore.length) {
       llStats = llStatsStore;
@@ -99,53 +122,76 @@
       return { region_idx: null };
     }
 
-    const point = hoverData.points[0];
-    if (point && point.customdata !== undefined && point.customdata !== null) {
-      const raw       = Array.isArray(point.customdata) ? point.customdata[0] : point.customdata;
-      const regionIdx = parseInt(raw);
+    var point = hoverData.points[0];
+    if (
+      point &&
+      point.customdata !== undefined &&
+      point.customdata !== null
+    ) {
+      var raw = Array.isArray(point.customdata)
+        ? point.customdata[0]
+        : point.customdata;
+      // [L3 FIX] Always specify radix 10.
+      var regionIdx = parseInt(raw, 10);
       updateTooltip(Number.isFinite(regionIdx) ? regionIdx : null);
-      return { region_idx: Number.isFinite(regionIdx) ? regionIdx : null };
+      return {
+        region_idx: Number.isFinite(regionIdx) ? regionIdx : null,
+      };
     }
 
     updateTooltip(null);
     return { region_idx: null };
   };
 
-  // ── Plotly unhover ─────────────────────────────────────────────────────────
+  // -- Plotly unhover + mouseleave ------------------------------------------
 
   function setupPlotlyUnhover(attempt) {
-    const graph = getGraphDiv();
-    if (!graph || typeof graph.on !== 'function') {
-      if (attempt < 60) setTimeout(() => setupPlotlyUnhover(attempt + 1), 200);
+    var graph = getGraphDiv();
+    if (!graph || typeof graph.on !== "function") {
+      if (attempt < 60)
+        setTimeout(function () {
+          setupPlotlyUnhover(attempt + 1);
+        }, 200);
       return;
     }
-    debugLog('binding plotly_unhover listener');
-    graph.on('plotly_unhover', () => {
-      debugLog('plotly_unhover fired');
+
+    debugLog("binding plotly_unhover listener");
+    graph.on("plotly_unhover", function () {
+      debugLog("plotly_unhover fired");
       updateTooltip(null);
     });
+
+    // [L5 FIX] Force-hide tooltip when mouse leaves the graph container,
+    // since Plotly sometimes misses the unhover event on fast exits.
+    var host = document.getElementById("spectrum-graph");
+    if (host) {
+      host.addEventListener("mouseleave", function () {
+        debugLog("graph mouseleave — hiding tooltip");
+        updateTooltip(null);
+      });
+    }
   }
 
-  // ── Initialisation ─────────────────────────────────────────────────────────
+  // -- Initialisation -------------------------------------------------------
 
   function init() {
     setupMouseTracking();
     setupPlotlyUnhover(0);
 
-    // Read stats from the inline script that layout.py embeds in the HTML.
-    // This is synchronous — available before any callback fires.
+    // Read stats from the global cache if already available.
     if (window.__llStatsData && window.__llStatsData.length) {
       llStats = window.__llStatsData;
-      debugLog('init: loaded llStats from __llStatsData', { count: llStats.length });
+      debugLog("init: loaded llStats from __llStatsData", {
+        count: llStats.length,
+      });
     } else {
-      debugLog('init: __llStatsData not ready — will rely on Dash callback');
+      debugLog("init: __llStatsData not ready — will rely on Dash callback");
     }
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
   }
-
 })();

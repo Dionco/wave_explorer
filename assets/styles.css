@@ -424,7 +424,7 @@ body {
 }
 
 /* ── Divider ─────────────────────────────────────────────────── */
-.div {
+.divider {
   height: 1px;
   background: var(--clr-border2);
   margin: 14px 0;

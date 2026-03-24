@@ -9,28 +9,28 @@ import numpy as np
 # ══════════════════════════════════════════════════════════════════════════════
 
 C = {
-    "bg":       "#0d1117",
-    "surf":     "#161b22",
-    "surf2":    "#1c2333",
-    "border":   "#30363d",
-    "border2":  "#21262d",
-    "text":     "#e6edf3",
-    "muted":    "#7d8590",
-    "dim":      "#484f58",
-    "cyan":     "#58d1eb",
-    "cyan_bg":  "#0a2e38",
-    "amber":    "#ffa726",
+    "bg": "#0d1117",
+    "surf": "#161b22",
+    "surf2": "#1c2333",
+    "border": "#30363d",
+    "border2": "#21262d",
+    "text": "#e6edf3",
+    "muted": "#7d8590",
+    "dim": "#484f58",
+    "cyan": "#58d1eb",
+    "cyan_bg": "#0a2e38",
+    "amber": "#ffa726",
     "amber_bg": "#2e1d00",
-    "green":    "#3fb950",
+    "green": "#3fb950",
     "green_bg": "#0b2110",
-    "red":      "#f85149",
-    "red_bg":   "#2e0d0b",
-    "orange":   "#fb8f44",
-    "obs":      "#d0dae7",
-    "fit":      "#58d1eb",
-    "resid":    "#ffa726",
-    "ll_fill":  "rgba(62, 173, 90, 0.18)",
-    "ll_line":  "rgba(40, 150, 70, 0.80)",
+    "red": "#f85149",
+    "red_bg": "#2e0d0b",
+    "orange": "#fb8f44",
+    "obs": "#d0dae7",
+    "fit": "#58d1eb",
+    "resid": "#ffa726",
+    "ll_fill": "rgba(62, 173, 90, 0.18)",
+    "ll_line": "rgba(40, 150, 70, 0.80)",
     "cand_fill": "rgba(255, 167, 38, 0.20)",
     "cand_line": "rgba(245, 130, 10, 0.95)",
 }
@@ -42,6 +42,7 @@ SANS = "'DM Sans', 'Segoe UI', system-ui, sans-serif"
 # ══════════════════════════════════════════════════════════════════════════════
 # Color & label coding
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def chi2_color(v: float) -> str:
     """Return color for chi2 value."""
@@ -79,6 +80,7 @@ def chi2_pct(v: float, cap: float = 10.0) -> int:
 # ══════════════════════════════════════════════════════════════════════════════
 # Format helpers
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _fmt(v: float, fmt: str = ".4f", fallback: str = "—") -> str:
     """Format a float value; return fallback if not finite."""
