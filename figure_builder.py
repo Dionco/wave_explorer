@@ -22,17 +22,34 @@ _LL_FILL = C["ll_fill"]
 _LL_LINE = C["ll_line"]
 
 
+_ADDED_FILL = "rgba(88, 209, 235, 0.20)"
+_ADDED_LINE = "rgba(88, 209, 235, 0.95)"
+_EXCLUDED_FILL = "rgba(248, 81, 73, 0.06)"
+_EXCLUDED_LINE = "rgba(248, 81, 73, 0.40)"
+
+
+def _shape_style(entry: dict):
+    if entry.get("excluded", False):
+        return _EXCLUDED_FILL, _EXCLUDED_LINE
+    if entry.get("added", False):
+        return _ADDED_FILL, _ADDED_LINE
+    return _LL_FILL, _LL_LINE
+
+
 def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
     """Return rectangular region spans for fitted line-list regions.
 
-    Note: Draggable handles are rendered as SVG overlays in JavaScript,
-    not as Plotly shapes. This function only returns the background rectangles.
+    Colors follow the session state of each entry:
+      - green   — saved / baseline
+      - cyan    — added in this session (saved)
+      - red-faint — excluded (kept for context)
 
-    The residual y=0 reference hline is appended at the end so it survives
-    Patch() updates in candidate.py (which replace the entire shapes list).
+    Draggable handles are rendered as SVG overlays in JavaScript, not as
+    Plotly shapes. This function only returns the background rectangles.
     """
     shapes: List[dict] = []
     for e in ll_entries:
+        fill, line = _shape_style(e)
         for yref in ("y domain", "y2 domain"):
             shapes.append(
                 dict(
@@ -43,15 +60,16 @@ def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
                     x1=e["upper"],
                     y0=0,
                     y1=1,
-                    fillcolor=_LL_FILL,
-                    line=dict(color=_LL_LINE, width=0.8),
+                    fillcolor=fill,
+                    line=dict(color=line, width=0.8),
                     layer="below",
                     editable=False,
                 )
             )
 
-    # [H3 FIX] Residual y=0 reference line as a shape — keeps it in sync
-    # with the Patch path in candidate.py which also appends it.
+    # [H3 FIX] Residual reference lines as shapes — keeps them in sync
+    # with the Patch path in candidate.py which also appends them.
+    # Solid y=0 baseline plus dotted guides at +/-0.05.
     shapes.append(
         dict(
             type="line",
@@ -61,7 +79,33 @@ def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
             x1=1,
             y0=0,
             y1=0,
-            line=dict(color="rgba(120,130,150,0.40)", width=1, dash="dot"),
+            line=dict(color="rgba(120,130,150,0.55)", width=1),
+            layer="below",
+        )
+    )
+    shapes.append(
+        dict(
+            type="line",
+            xref="paper",
+            yref="y2",
+            x0=0,
+            x1=1,
+            y0=0.05,
+            y1=0.05,
+            line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+            layer="below",
+        )
+    )
+    shapes.append(
+        dict(
+            type="line",
+            xref="paper",
+            yref="y2",
+            x0=0,
+            x1=1,
+            y0=-0.05,
+            y1=-0.05,
+            line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
             layer="below",
         )
     )
@@ -118,8 +162,13 @@ def _add_region_hover_overlays(
     always returns data from the first polygon, making region identification
     impossible. Per-region traces are the only reliable approach.
     """
-    fillcol = "rgba(255,80,80,0.16)" if debug_hover else "rgba(62,173,90,0.06)"
-    linecol = "rgba(255,120,120,0.55)" if debug_hover else "rgba(62,173,90,0.22)"
+    # Overlay traces are transparent in normal use: they exist purely as
+    # hover hit targets (per-region tooltip with chi2/etc). The visible
+    # region appearance comes from layout.shapes (which Patch updates on
+    # drag/save). Coloring the overlay would leave a stale ghost rectangle
+    # at the pre-drag position because traces don't move with shapes.
+    fillcol = "rgba(255,80,80,0.16)" if debug_hover else "rgba(0,0,0,0)"
+    linecol = "rgba(255,120,120,0.55)" if debug_hover else "rgba(0,0,0,0)"
 
     for rs in ll_hover_stats:
         lo = rs["lower"]
@@ -162,6 +211,7 @@ def build_base_figure(
     dataset: dict,
     ll_entries_override: Optional[List[dict]] = None,
     debug_hover: bool = False,
+    initial_candidate: Optional[tuple] = None,
 ) -> go.Figure:
     """Build the multi-row spectrum figure with line-list regions.
 
@@ -385,7 +435,16 @@ def build_base_figure(
             bordercolor=C["border"],
             font=dict(family=MONO, size=11, color=C["text"]),
         ),
-        shapes=_ll_shapes(ll_entries),
+        shapes=(
+            _ll_shapes(ll_entries)
+            + (
+                _cand_shapes(
+                    float(initial_candidate[0]), float(initial_candidate[1])
+                )
+                if initial_candidate
+                else []
+            )
+        ),
         annotations=[
             dict(
                 text=(
@@ -414,22 +473,26 @@ def build_base_figure(
         ],
     )
 
-    for ax, title in [
-        ("yaxis", "Norm. flux"),
-        ("yaxis2", "Residual"),
-    ]:
-        fig.update_layout(
-            **{
-                ax: dict(
-                    title_text=title,
-                    title_font=dict(size=11),
-                    gridcolor="#1c2333",
-                    gridwidth=1,
-                    zerolinecolor="#1c2333",
-                    tickfont=dict(size=10),
-                )
-            }
-        )
+    fig.update_layout(
+        yaxis=dict(
+            title_text="Norm. flux",
+            title_font=dict(size=11),
+            gridcolor="#1c2333",
+            gridwidth=1,
+            zerolinecolor="#1c2333",
+            tickfont=dict(size=10),
+        ),
+        yaxis2=dict(
+            title_text="Residual",
+            title_font=dict(size=11),
+            gridcolor="#1c2333",
+            gridwidth=1,
+            zerolinecolor="#1c2333",
+            tickfont=dict(size=10),
+            range=[-0.2, 0.2],
+            autorange=False,
+        ),
+    )
 
     fig.update_xaxes(
         title_text="Wavelength (nm)",
@@ -448,10 +511,4 @@ def build_base_figure(
         row=1,
         col=1,
     )
-    fig.update_xaxes(
-        rangeslider=dict(visible=True, bgcolor="#0d1117", thickness=0.04),
-        row=2,
-        col=1,
-    )
-
     return fig

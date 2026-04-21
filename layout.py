@@ -12,6 +12,46 @@ from .theme import C, MONO, _fmt, chi2_color, chi2_label, chi2_pct
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Initial candidate range
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def initial_candidate_range(
+    dataset: dict, min_w: float, max_w: float
+) -> tuple:
+    """Pick a sensible initial candidate range.
+
+    Strategy: prefer the first non-excluded line-list region with finite
+    chi2 stats, so the user lands on something meaningful instead of the
+    left edge (which often has no fitted pixels).
+
+    Falls back to the first line-list region, then to a 1 nm window at
+    the left of the spectrum.
+    """
+    for rs in dataset.get("ll_hover_stats", []):
+        c2 = rs.get("med_chi2")
+        if c2 is None:
+            continue
+        try:
+            c2f = float(c2)
+        except (TypeError, ValueError):
+            continue
+        if c2f == c2f:  # NaN check
+            lo = max(min_w, min(max_w, float(rs["lower"])))
+            hi = max(min_w, min(max_w, float(rs["upper"])))
+            if hi > lo:
+                return lo, hi
+
+    for e in dataset.get("ll_entries", []):
+        lo = max(min_w, min(max_w, float(e["lower"])))
+        hi = max(min_w, min(max_w, float(e["upper"])))
+        if hi > lo and not e.get("excluded", False):
+            return lo, hi
+
+    return min_w, min(min_w + 1.0, max_w)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Header
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -55,6 +95,61 @@ def build_header(dataset: dict) -> html.Div:
                 ],
             ),
             html.Div(className="h-spacer"),
+            html.Button(
+                "\u270e Draw Region",
+                id="draw-mode-toggle",
+                n_clicks=0,
+                className="btn btn-sm btn-amber",
+                style={"marginRight": "8px"},
+            ),
+            # ── Selected-region chip + per-region action buttons ──────────────
+            html.Div(
+                id="selected-region-container",
+                className="selected-region-container",
+                style={"display": "none"},
+                children=[
+                    html.Span(
+                        className="h-chip c-cyan",
+                        children=[
+                            "◉ ",
+                            html.Span(
+                                id="selected-region-label", className="hc-val"
+                            ),
+                        ],
+                    ),
+                    html.Button(
+                        "\u2a2f Exclude",
+                        id="selected-exclude-btn",
+                        n_clicks=0,
+                        className="btn btn-sm btn-danger",
+                        style={"display": "none"},
+                        title="Exclude the selected region from the saved line list",
+                    ),
+                    html.Button(
+                        "\u21ba Restore",
+                        id="selected-restore-btn",
+                        n_clicks=0,
+                        className="btn btn-sm btn-green",
+                        style={"display": "none"},
+                        title="Include the selected region in the saved line list",
+                    ),
+                    html.Button(
+                        "✕ Delete",
+                        id="selected-delete-btn",
+                        n_clicks=0,
+                        className="btn btn-sm btn-danger",
+                        style={"display": "none"},
+                        title="Permanently remove this unsaved added region",
+                    ),
+                    html.Button(
+                        "Deselect",
+                        id="selected-clear-btn",
+                        n_clicks=0,
+                        className="btn btn-sm",
+                        title="Clear region selection",
+                    ),
+                ],
+            ),
             html.Div(
                 id="pending-status-container",
                 className="pending-status-container",
@@ -70,16 +165,25 @@ def build_header(dataset: dict) -> html.Div:
                         ],
                     ),
                     html.Button(
-                        "✓ Save Changes",
+                        "\u21b6 Undo",
+                        id="undo-btn",
+                        n_clicks=0,
+                        className="btn btn-sm btn-amber",
+                        title="Revert the most recent change",
+                        disabled=True,
+                    ),
+                    html.Button(
+                        "\u2b73 Save Curated File",
                         id="save-changes-btn",
                         n_clicks=0,
                         className="btn btn-sm btn-green",
                     ),
                     html.Button(
-                        "✕ Discard",
+                        "✕ Discard all changes",
                         id="discard-changes-btn",
                         n_clicks=0,
                         className="btn btn-sm btn-danger",
+                        title="Drop every unsaved change and remove unsaved drawn regions",
                     ),
                 ],
             ),
@@ -90,7 +194,21 @@ def build_header(dataset: dict) -> html.Div:
                     "overflow": "hidden",
                     "textOverflow": "ellipsis",
                 },
-                children=Path(dataset["line_list"]).name,
+                children=[
+                    "source ",
+                    html.Span(
+                        Path(dataset["line_list"]).name, className="hc-val"
+                    ),
+                ],
+            ),
+            html.Div(
+                id="last-saved-chip",
+                className="h-chip c-green",
+                style={"display": "none"},
+                children=[
+                    "\u2714 saved ",
+                    html.Span(id="last-saved-name", className="hc-val"),
+                ],
             ),
         ],
     )
@@ -189,6 +307,39 @@ def build_candidate_panel(
                 ],
             ),
             html.Div(id="src-hint", className="src-hint none", children="—"),
+            html.Div(
+                className="legend-row",
+                children=[
+                    html.Span([
+                        html.Span(className="legend-swatch", style={
+                            "background": "rgba(62,173,90,0.35)",
+                            "border": "1px solid rgba(40,150,70,0.9)",
+                        }),
+                        "saved",
+                    ]),
+                    html.Span([
+                        html.Span(className="legend-swatch", style={
+                            "background": "rgba(255,167,38,0.4)",
+                            "border": "1px solid rgba(245,130,10,0.95)",
+                        }),
+                        "pending",
+                    ]),
+                    html.Span([
+                        html.Span(className="legend-swatch", style={
+                            "background": "rgba(88,209,235,0.4)",
+                            "border": "1px solid rgba(88,209,235,0.95)",
+                        }),
+                        "added",
+                    ]),
+                    html.Span([
+                        html.Span(className="legend-swatch", style={
+                            "background": "rgba(248,81,73,0.12)",
+                            "border": "1px dashed rgba(248,81,73,0.5)",
+                        }),
+                        "excluded",
+                    ]),
+                ],
+            ),
         ],
     )
 
@@ -390,8 +541,101 @@ def render_stats(chi2: dict, resid: dict, lo: float, hi: float) -> html.Div:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _effective_excluded(
+    real_idx: int,
+    ll_entries,
+    pending_changes,
+) -> bool:
+    """Return the effective excluded state, accounting for any unsaved
+    pending edit that has toggled exclusion for this region."""
+    pc = (pending_changes or {}).get(str(real_idx))
+    if isinstance(pc, dict) and "excluded" in pc:
+        return bool(pc.get("excluded", False))
+    if ll_entries and 0 <= real_idx < len(ll_entries):
+        return bool(ll_entries[real_idx].get("excluded", False))
+    return False
+
+
+def build_table_row(
+    i: int,
+    row: dict,
+    ll_entries=None,
+    pending_changes=None,
+) -> html.Tr:
+    """Render a single region table row. Shared between the initial
+    layout build and the filter_table callback so the exclude/include
+    button always reflects the effective (pending-aware) state."""
+    col = chi2_color(row["med_chi2"])
+    lbl = chi2_label(row["med_chi2"])
+    real_idx = int(row.get("region_idx", i))
+    is_excluded = _effective_excluded(real_idx, ll_entries, pending_changes)
+
+    if is_excluded:
+        btn_char = "\u21ba"  # anticlockwise open-circle arrow = restore
+        btn_cls = "btn btn-xs btn-green"
+        btn_title = "Restore this region (include in saved line list)"
+    else:
+        btn_char = "\u2a2f"  # vector cross product = exclude
+        btn_cls = "btn btn-xs btn-danger"
+        btn_title = "Exclude this region from saved line list"
+
+    tr_cls = "asap-row-excluded" if is_excluded else None
+
+    return html.Tr(
+        id={"type": "region-row", "index": real_idx},
+        className=tr_cls,
+        children=[
+            html.Td(f"{i+1}", className="rank-num"),
+            html.Td(f"{row['center']:.3f}"),
+            html.Td(f"{row['lower']:.3f} – {row['upper']:.3f}"),
+            html.Td(
+                html.Span(
+                    f"{row['element']} {row['ion']}", className="elem-tag"
+                )
+            ),
+            html.Td(
+                f"{row['med_chi2']:.3f}",
+                style={"color": col, "fontWeight": "700"},
+            ),
+            html.Td(
+                html.Span(
+                    lbl,
+                    className="q-badge",
+                    style={
+                        "background": col + "22",
+                        "color": col,
+                        "border": f"1px solid {col}55",
+                    },
+                )
+            ),
+            html.Td(str(row["n_stars"])),
+            html.Td(str(row["med_npix"])),
+            html.Td(
+                html.Button(
+                    "→",
+                    id={"type": "nav-btn", "index": real_idx},
+                    n_clicks=0,
+                    className="btn btn-xs btn-cyan",
+                    title="Navigate to region",
+                )
+            ),
+            html.Td(
+                html.Button(
+                    btn_char,
+                    id={"type": "exclude-btn", "index": real_idx},
+                    n_clicks=0,
+                    className=btn_cls,
+                    title=btn_title,
+                )
+            ),
+        ],
+    )
+
+
 def build_table_panel(
-    region_summary: List[dict], unique_elements: List[str]
+    region_summary: List[dict],
+    unique_elements: List[str],
+    ll_entries=None,
 ) -> html.Div:
     elem_options = [{"label": "All elements", "value": "ALL"}] + [
         {"label": e, "value": e} for e in unique_elements
@@ -407,52 +651,13 @@ def build_table_panel(
             html.Th("N★"),
             html.Th("N pix"),
             html.Th(""),
+            html.Th(""),
         ]
     )
-    body_rows = []
-    for i, row in enumerate(region_summary[:50]):
-        col = chi2_color(row["med_chi2"])
-        lbl = chi2_label(row["med_chi2"])
-        body_rows.append(
-            html.Tr(
-                id={"type": "region-row", "index": i},
-                children=[
-                    html.Td(f"{i+1}", className="rank-num"),
-                    html.Td(f"{row['center']:.3f}"),
-                    html.Td(f"{row['lower']:.3f} – {row['upper']:.3f}"),
-                    html.Td(
-                        html.Span(
-                            f"{row['element']} {row['ion']}", className="elem-tag"
-                        )
-                    ),
-                    html.Td(
-                        f"{row['med_chi2']:.3f}",
-                        style={"color": col, "fontWeight": "700"},
-                    ),
-                    html.Td(
-                        html.Span(
-                            lbl,
-                            className="q-badge",
-                            style={
-                                "background": col + "22",
-                                "color": col,
-                                "border": f"1px solid {col}55",
-                            },
-                        )
-                    ),
-                    html.Td(str(row["n_stars"])),
-                    html.Td(str(row["med_npix"])),
-                    html.Td(
-                        html.Button(
-                            "→",
-                            id={"type": "nav-btn", "index": i},
-                            n_clicks=0,
-                            className="btn btn-xs btn-cyan",
-                        )
-                    ),
-                ],
-            )
-        )
+    body_rows = [
+        build_table_row(i, row, ll_entries, None)
+        for i, row in enumerate(region_summary[:50])
+    ]
     return html.Div(
         className="card gap-lg",
         children=[
@@ -566,8 +771,7 @@ def build_session_panel() -> html.Div:
 def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div:
     min_w = float(dataset["common_w"][0])
     max_w = float(dataset["common_w"][-1])
-    init_lo = min_w
-    init_hi = min(min_w + 1.0, max_w)
+    init_lo, init_hi = initial_candidate_range(dataset, min_w, max_w)
 
     unique_elements = sorted({e["element"] for e in dataset["region_summary"]})
     all_rows = dataset["region_summary"]
@@ -603,16 +807,31 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
         for rs in dataset["ll_hover_stats"]
     ]
 
-    ll_entries_jsonable = [
-        {
+    def _jsonable_entry(e: dict) -> dict:
+        return {
             "center": float(e["center"]),
             "lower": float(e["lower"]),
             "upper": float(e["upper"]),
-            "element": str(e["element"]),
-            "ion": str(e["ion"]),
+            "element": str(e.get("element", "Unknown")),
+            "ion": str(e.get("ion", "1")),
+            "order": str(e.get("order", "0")),
+            "inline_comment": str(e.get("inline_comment", "") or ""),
+            "excluded": bool(e.get("excluded", False)),
+            "added": bool(e.get("added", False)),
+            "original_lower": (
+                float(e["original_lower"])
+                if e.get("original_lower") is not None
+                else None
+            ),
+            "original_upper": (
+                float(e["original_upper"])
+                if e.get("original_upper") is not None
+                else None
+            ),
+            "original_excluded": bool(e.get("original_excluded", False)),
         }
-        for e in dataset["ll_entries"]
-    ]
+
+    ll_entries_jsonable = [_jsonable_entry(e) for e in dataset["ll_entries"]]
 
     return html.Div(
         [
@@ -664,7 +883,9 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                     html.Div(
                         className="two-col gap-md",
                         children=[
-                            build_table_panel(all_rows, unique_elements),
+                            build_table_panel(
+                                all_rows, unique_elements, ll_entries_jsonable
+                            ),
                             build_session_panel(),
                         ],
                     ),
@@ -705,6 +926,10 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
             dcc.Store(id="pending-changes-store", data={}),
             dcc.Store(id="unsaved-flag-store", data={"has_changes": False}),
             dcc.Store(id="discard-signal-store", data=None),
+            dcc.Store(id="draw-mode-active-store", data=False),
+            dcc.Store(id="last-saved-path-store", data=None),
+            dcc.Store(id="selected-region-store", data=None),
+            dcc.Store(id="pending-history-store", data=[]),
             # ── Cursor tooltip ─────────────────────────────────────────────────
             html.Div(
                 id="cursor-tooltip",

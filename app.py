@@ -11,7 +11,7 @@ from dash import Dash, Input, Output, State
 from .callbacks import register_all_callbacks
 from .data_processing import build_dataset
 from .figure_builder import build_base_figure
-from .layout import build_layout
+from .layout import build_layout, initial_candidate_range
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -28,7 +28,12 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
     max_w = float(dataset["common_w"][-1])
     all_rows = dataset["region_summary"]
 
-    base_fig = build_base_figure(dataset, debug_hover=debug_hover)
+    init_lo, init_hi = initial_candidate_range(dataset, min_w, max_w)
+    base_fig = build_base_figure(
+        dataset,
+        debug_hover=debug_hover,
+        initial_candidate=(init_lo, init_hi),
+    )
 
     app = Dash(__name__, suppress_callback_exceptions=True)
     app.title = f"ASAP — {dataset['suffix']}"
@@ -67,10 +72,14 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
 
     # ── Clientside callback: discard reset ───────────────────────────────────
     # When the user clicks Discard, the Python callback emits the saved
-    # ll-entries data via discard-signal-store.  This JS callback:
+    # ll-entries data via discard-signal-store. This JS callback:
     #   1. Resets the __llEntriesData cache (cloned)
-    #   2. Calls resetShapesToEntries() which resets the JS mirror AND
-    #      calls Plotly.relayout() to immediately snap shapes back.
+    #   2. Calls resetShapesToEntries(), which resets only the JS-side
+    #      `llEntries` mirror — it intentionally does NOT call
+    #      Plotly.relayout(), because that would force a layoutReplot and
+    #      reset the user's zoom/pan. The visible shape positions are
+    #      snapped back by the Python update_figure_shapes callback
+    #      (a Patch of layout.shapes, which preserves axis state).
     app.clientside_callback(
         """
         function(discardSignal) {
@@ -85,8 +94,9 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
                 return Object.assign({}, e);
             });
 
-            // resetShapesToEntries clones internally AND calls Plotly.relayout
-            // to immediately snap shape positions back to saved coordinates.
+            // Reset the JS-side mirror only. Shapes are re-patched by the
+            // Python update_figure_shapes callback on the ll-entries-store
+            // change, which preserves zoom/pan.
             if (window.resetShapesToEntries) {
                 window.resetShapesToEntries(entries);
             }
@@ -124,6 +134,40 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
         """,
         Output("handles-hover-sync-store", "data"),
         Input("tooltip-sync-store", "data"),
+    )
+
+    # ── Clientside: capture plot click as selected region idx ─────────────
+    # Hover overlay traces carry each region's idx in customdata. A click
+    # on any overlay polygon lands in clickData.points[0].customdata, so
+    # we extract the idx and write it to selected-region-store. A click
+    # outside any overlay (empty points) clears the selection.
+    app.clientside_callback(
+        """
+        function(clickData) {
+            if (!clickData || !clickData.points || !clickData.points.length) {
+                return window.dash_clientside
+                    ? window.dash_clientside.no_update : null;
+            }
+            var pt = clickData.points[0];
+            if (pt.customdata === undefined || pt.customdata === null) {
+                return window.dash_clientside
+                    ? window.dash_clientside.no_update : null;
+            }
+            var raw = Array.isArray(pt.customdata)
+                ? pt.customdata[0] : pt.customdata;
+            var regionIdx = parseInt(raw, 10);
+            if (!Number.isFinite(regionIdx)) {
+                return window.dash_clientside
+                    ? window.dash_clientside.no_update : null;
+            }
+            // Overlay customdata carries the 1-based region_idx used by
+            // the tooltip. ll-entries-store is 0-based, so shift here.
+            return {region_idx: regionIdx - 1};
+        }
+        """,
+        Output("selected-region-store", "data"),
+        Input("spectrum-graph", "clickData"),
+        prevent_initial_call=True,
     )
 
     register_all_callbacks(

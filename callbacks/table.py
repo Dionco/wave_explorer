@@ -5,9 +5,9 @@ Uses @app.callback (instance-scoped) to prevent duplicate registration
 on Dash hot-reload.
 """
 
-from dash import Input, Output, html
+from dash import Input, Output
 
-from ..theme import chi2_color, chi2_label
+from ..layout import build_table_row
 
 
 def register_table_callbacks(app, dataset):
@@ -15,59 +15,25 @@ def register_table_callbacks(app, dataset):
 
     all_rows = dataset["region_summary"]
 
+    # Re-render the table body whenever:
+    #   - the element filter changes, OR
+    #   - the live ll-entries store changes (e.g. save baselines new state), OR
+    #   - the pending-changes store changes (e.g. user toggles exclude/include).
+    # This keeps the per-row include/exclude button label + style in sync
+    # with the effective excluded state of each region.
     @app.callback(
         Output("table-body", "children"),
         Input("elem-filter", "value"),
+        Input("ll-entries-store", "data"),
+        Input("pending-changes-store", "data"),
     )
-    def filter_table(elem_filter):
+    def filter_table(elem_filter, ll_entries_data, pending_changes):
         rows = (
             all_rows
             if elem_filter == "ALL"
             else [r for r in all_rows if r["element"] == elem_filter]
         )
-        body_rows = []
-        for i, row in enumerate(rows[:50]):
-            col = chi2_color(row["med_chi2"])
-            lbl = chi2_label(row["med_chi2"])
-            real_idx = all_rows.index(row) if row in all_rows else i
-            body_rows.append(
-                html.Tr(
-                    id={"type": "region-row", "index": real_idx},
-                    children=[
-                        html.Td(f"{i+1}", className="rank-num"),
-                        html.Td(f"{row['center']:.3f}"),
-                        html.Td(f"{row['lower']:.3f} – {row['upper']:.3f}"),
-                        html.Td(
-                            html.Span(
-                                f"{row['element']} {row['ion']}", className="elem-tag"
-                            )
-                        ),
-                        html.Td(
-                            f"{row['med_chi2']:.3f}",
-                            style={"color": col, "fontWeight": "700"},
-                        ),
-                        html.Td(
-                            html.Span(
-                                lbl,
-                                className="q-badge",
-                                style={
-                                    "background": col + "22",
-                                    "color": col,
-                                    "border": f"1px solid {col}55",
-                                },
-                            )
-                        ),
-                        html.Td(str(row["n_stars"])),
-                        html.Td(str(row["med_npix"])),
-                        html.Td(
-                            html.Button(
-                                "→",
-                                id={"type": "nav-btn", "index": real_idx},
-                                n_clicks=0,
-                                className="btn btn-xs btn-cyan",
-                            )
-                        ),
-                    ],
-                )
-            )
-        return body_rows
+        return [
+            build_table_row(i, row, ll_entries_data, pending_changes)
+            for i, row in enumerate(rows[:50])
+        ]

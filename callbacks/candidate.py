@@ -14,7 +14,7 @@ from dash import ctx as dash_ctx
 from dash import html
 
 from ..data_processing import compute_custom_region_chi2, compute_residual_metrics
-from ..figure_builder import _cand_shapes, build_base_figure
+from ..figure_builder import _cand_shapes
 from ..layout import render_stats
 from ..theme import C, MONO
 
@@ -55,9 +55,14 @@ SAVED_FILL = "rgba(62, 173, 90, 0.18)"
 SAVED_LINE = "rgba(40, 150, 70, 0.80)"
 PENDING_FILL = "rgba(255, 167, 38, 0.25)"
 PENDING_LINE = "rgba(245, 130, 10, 0.95)"
+ADDED_FILL = "rgba(88, 209, 235, 0.20)"
+ADDED_LINE = "rgba(88, 209, 235, 0.95)"
+EXCLUDED_FILL = "rgba(248, 81, 73, 0.06)"
+EXCLUDED_LINE = "rgba(248, 81, 73, 0.40)"
 
-# [H3 FIX] The residual y=0 reference line, expressed as a shape so it
-# survives Patch() updates (which replace the entire shapes array).
+# [H3 FIX] Residual reference lines, expressed as shapes so they survive
+# Patch() updates (which replace the entire shapes array).
+# Solid line at y=0, light dotted guides at y=+/-0.05.
 HLINE_SHAPE = dict(
     type="line",
     xref="paper",
@@ -66,31 +71,72 @@ HLINE_SHAPE = dict(
     x1=1,
     y0=0,
     y1=0,
-    line=dict(color="rgba(120,130,150,0.40)", width=1, dash="dot"),
+    line=dict(color="rgba(120,130,150,0.55)", width=1),
     layer="below",
 )
+
+HLINE_POS_GUIDE = dict(
+    type="line",
+    xref="paper",
+    yref="y2",
+    x0=0,
+    x1=1,
+    y0=0.05,
+    y1=0.05,
+    line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+    layer="below",
+)
+
+HLINE_NEG_GUIDE = dict(
+    type="line",
+    xref="paper",
+    yref="y2",
+    x0=0,
+    x1=1,
+    y0=-0.05,
+    y1=-0.05,
+    line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+    layer="below",
+)
+
+
+def _pick_style(entry, is_pending):
+    """Pick fill / line color based on entry state + pending flag."""
+    if entry.get("excluded", False):
+        return EXCLUDED_FILL, EXCLUDED_LINE
+    if is_pending:
+        return PENDING_FILL, PENDING_LINE
+    if entry.get("added", False):
+        return ADDED_FILL, ADDED_LINE
+    return SAVED_FILL, SAVED_LINE
 
 
 def _build_ll_shapes(
     ll_entries: Optional[List[dict]],
     pending_changes: Optional[dict],
 ) -> List[dict]:
-    """Build LL region shapes; pending regions render amber, saved render green.
+    """Build LL region shapes.
 
-    Also appends the residual y=0 reference hline so the Patch path
-    never accidentally drops it.
+    Colors:
+      - green: saved (baseline)
+      - amber: pending (unsaved edits — adjust, exclude-toggle)
+      - cyan : added in this session (not yet saved)
+      - red-faint: excluded (kept on the plot for context)
+
+    The residual y=0 reference hline is appended so Patch() updates preserve it.
+    Shape index contract with drag_handles.js is maintained: 2 shapes per
+    entry (y domain + y2 domain), in entry order.
     """
-    pending_idx = (
-        set(int(k) for k in pending_changes.keys()) if pending_changes else set()
-    )
+    pending_changes = pending_changes or {}
     shapes: List[dict] = []
 
     for idx, entry in enumerate(ll_entries or []):
-        e = pending_changes.get(str(idx), entry) if idx in pending_idx else entry
+        staged = pending_changes.get(str(idx))
+        is_pending = staged is not None
+        e = staged if is_pending else entry
         lower = float(e["lower"])
         upper = float(e["upper"])
-        fill = PENDING_FILL if idx in pending_idx else SAVED_FILL
-        line = PENDING_LINE if idx in pending_idx else SAVED_LINE
+        fill, line = _pick_style(e, is_pending)
 
         for yref in ("y domain", "y2 domain"):
             shapes.append(
@@ -109,8 +155,9 @@ def _build_ll_shapes(
                 )
             )
 
-    # Always include the hline so the Patch path preserves it.
     shapes.append(HLINE_SHAPE)
+    shapes.append(HLINE_POS_GUIDE)
+    shapes.append(HLINE_NEG_GUIDE)
     return shapes
 
 
@@ -159,17 +206,15 @@ def register_candidate_callbacks(
 
         if isinstance(tid, dict) and tid.get("type") == "nav-btn":
             idx = tid["index"]
-            if idx < len(all_rows):
-                row = all_rows[idx]
-                # Use live ll-entries bounds if available, fallback to
-                # the static region_summary for the label.
-                lo, hi = clamp(row["lower"], row["upper"], min_w, max_w)
+            if ll_entries_data and 0 <= idx < len(ll_entries_data):
+                e = ll_entries_data[idx]
+                lo, hi = clamp(e["lower"], e["upper"], min_w, max_w)
                 return (
                     [lo, hi],
                     lo,
                     hi,
                     (
-                        f"Navigated to {row['element']} {row['ion']}"
+                        f"Navigated to {e.get('element', '?')} {e.get('ion', '?')}"
                         f"  {lo:.3f} \u2013 {hi:.3f} nm"
                     ),
                     "src-hint zoom",
@@ -299,18 +344,16 @@ def register_candidate_callbacks(
     # ════════════════════════════════════════════════════════════
     # Callback 4 – THE SINGLE FIGURE OWNER
     #
-    # FULL REBUILD on Discard or Save.  Returns the complete figure
-    # so Plotly.react() receives every shape x0/x1 explicitly.
-    # Zoom/pan preserved because uirevision="asap-main" is constant.
+    # Always uses Patch() — preserves zoom/pan unconditionally, since
+    # Patch does not touch axis state. _build_ll_shapes already computes
+    # correct colors (saved/pending/added/excluded) from ll_entries_data
+    # + pending_changes, so save / discard / drag / draw-accept all
+    # produce visually correct output through the same path.
     #
-    # PATCH for all other triggers (slider, drag).  Fast, no zoom reset.
-    #
-    # [M1 FIX] Inspect ctx.triggered (the list) instead of triggered_id
-    # to correctly handle save (which fires both ll-entries-store and
-    # pending-changes-store simultaneously).  Save takes priority.
-    #
-    # [L1 FIX] Added prevent_initial_call=True — the initial figure
-    # is already built correctly by build_base_figure in app.py.
+    # Trade-off: hover overlays (added as Scatter traces in
+    # build_base_figure) are NOT refreshed for newly-drawn regions until
+    # the page reloads. Shapes are correct; tooltips for brand-new
+    # regions show no overlay. Acceptable for curation workflow.
     # ════════════════════════════════════════════════════════════
     @app.callback(
         Output("spectrum-graph", "figure"),
@@ -320,28 +363,6 @@ def register_candidate_callbacks(
         prevent_initial_call=True,
     )
     def update_figure_shapes(candidate_range, ll_entries_data, pending_changes):
-        triggered_ids = {t["prop_id"].split(".")[0] for t in dash_ctx.triggered}
-
-        # Save takes priority when both stores fire simultaneously.
-        is_save = "ll-entries-store" in triggered_ids
-        is_discard = (
-            not is_save
-            and "pending-changes-store" in triggered_ids
-            and not pending_changes
-        )
-
-        if is_discard or is_save:
-            fig = build_base_figure(
-                dataset,
-                ll_entries_override=ll_entries_data,
-                debug_hover=debug_hover,
-            )
-            if candidate_range and len(candidate_range) == 2:
-                lo, hi = clamp(candidate_range[0], candidate_range[1], min_w, max_w)
-                fig.update_layout(shapes=list(fig.layout.shapes) + _cand_shapes(lo, hi))
-            return fig
-
-        # Patch path — fast update for slider/drag changes.
         shapes = _build_ll_shapes(ll_entries_data, pending_changes)
         if candidate_range and len(candidate_range) == 2:
             lo, hi = clamp(candidate_range[0], candidate_range[1], min_w, max_w)

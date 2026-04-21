@@ -353,6 +353,13 @@
     var bounds = getPlotBounds();
     if (!bounds) return;
 
+    // Starting a fresh gesture — hide any stale confirm popover from a
+    // previous draw so the UI does not point at an outdated range.
+    var stalePopover = document.getElementById("draw-confirm-popover");
+    if (stalePopover && stalePopover.style.display === "block") {
+      stalePopover.style.display = "none";
+    }
+
     var plotRect = getPlotRectPixels(bounds);
     var graphRect = bounds.graph.getBoundingClientRect();
     var absX = evt.clientX - graphRect.left;
@@ -541,6 +548,39 @@
     document.addEventListener("mousedown", onDocumentMouseDown, true);
     document.addEventListener("mouseup", onDocumentDragUp, true);
 
+    // Escape: cancel draw mode and any in-flight draw gesture / confirm popover.
+    document.addEventListener("keydown", function (evt) {
+      if (evt.key !== "Escape") return;
+      var popover = document.getElementById("draw-confirm-popover");
+      var popoverVisible =
+        popover && popover.style.display && popover.style.display !== "none";
+      if (!drawState.active && !popoverVisible) return;
+
+      if (popover) popover.style.display = "none";
+      if (drawState.previewRect) {
+        drawState.previewRect.remove();
+        drawState.previewRect = null;
+      }
+      drawState.startX = null;
+      drawState.startNm = null;
+      drawState.endX = null;
+      drawState.endNm = null;
+
+      if (window.activateDrawMode) window.activateDrawMode(false);
+      var btn = document.getElementById("draw-mode-toggle");
+      if (btn) {
+        btn.classList.remove("btn-active");
+        btn.textContent = "✎ Draw Region";
+      }
+      // Keep the Dash store in sync so the next toggle-button click is
+      // interpreted relative to the correct state.
+      if (window.dash_clientside && window.dash_clientside.set_props) {
+        window.dash_clientside.set_props("draw-mode-active-store", {
+          data: false,
+        });
+      }
+    });
+
     attachPlotlyListeners(0);
 
     // Read from the clientside callback cache if already available.
@@ -570,31 +610,15 @@
   };
 
   /**
-   * Reset the in-memory llEntries mirror AND the Plotly shape positions
-   * to the saved (ll-entries-store) values.  Called after Discard.
-   *
-   * [M2 FIX] Also calls Plotly.relayout() to immediately snap shapes back,
-   * rather than waiting for the Python full rebuild to arrive.  This closes
-   * the race window where shapes stayed at dragged positions visually.
+   * Reset the in-memory llEntries mirror to the saved (ll-entries-store)
+   * values after Discard. Shape positions are refreshed by the Dash
+   * Patch update from update_figure_shapes — we must NOT call
+   * Plotly.relayout() here because it triggers layoutReplot which
+   * resets zoom.
    */
   window.resetShapesToEntries = function (entries) {
     llEntries = cloneEntries(entries);
     debugLog("resetShapesToEntries: mirror reset", { count: llEntries.length });
-
-    // Immediately relayout all LL shape positions to match saved entries.
-    var graph = getGraphDiv();
-    if (graph && typeof Plotly !== "undefined" && llEntries.length) {
-      var update = {};
-      for (var i = 0; i < llEntries.length; i++) {
-        var e = llEntries[i];
-        var base = i * SHAPES_PER_REGION;
-        update["shapes[" + base + "].x0"] = parseFloat(e.lower);
-        update["shapes[" + base + "].x1"] = parseFloat(e.upper);
-        update["shapes[" + (base + 1) + "].x0"] = parseFloat(e.lower);
-        update["shapes[" + (base + 1) + "].x1"] = parseFloat(e.upper);
-      }
-      Plotly.relayout(graph, update);
-    }
   };
 
   window.updateHoveredRegion = function (hoverSync) {

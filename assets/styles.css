@@ -533,7 +533,6 @@ body {
 
 .asap-table tbody tr {
   border-bottom: 1px solid var(--clr-border2);
-  cursor: pointer;
   transition: background 0.1s;
 }
 
@@ -547,6 +546,32 @@ body {
 
 .asap-table tbody tr.active-row {
   background: var(--clr-cyan-bg);
+}
+
+.selected-region-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 20px;
+  background: rgba(88, 209, 235, 0.06);
+  border: 1px solid rgba(88, 209, 235, 0.35);
+}
+
+.selected-region-container .h-chip {
+  background: transparent;
+  border: none;
+  padding: 3px 4px;
+}
+
+.asap-table tbody tr.asap-row-excluded {
+  opacity: 0.55;
+}
+
+.asap-table tbody tr.asap-row-excluded td:not(:last-child) {
+  text-decoration: line-through;
+  text-decoration-color: var(--clr-red);
+  text-decoration-thickness: 1px;
 }
 
 .asap-table tbody td {
@@ -808,3 +833,30 @@ body {
 /* ═══════════════════════════════════════════════════════════════
    End of Toast Notification Styles
    ═══════════════════════════════════════════════════════════════ */
+/* ── Draw-mode active state ─────────────────────────────────── */
+.btn-active {
+    background: var(--clr-amber);
+    color: #1a1a1a;
+    border-color: var(--clr-amber);
+    box-shadow: 0 0 8px rgba(255, 167, 38, 0.6);
+}
+
+/* ── Legend for region colors ───────────────────────────────── */
+.legend-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 8px;
+    font-family: var(--mono-font);
+    font-size: 10px;
+    color: var(--clr-dim);
+    flex-wrap: wrap;
+}
+.legend-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+}

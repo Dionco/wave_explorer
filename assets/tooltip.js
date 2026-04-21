@@ -86,8 +86,37 @@
       "</div></div>";
 
     tooltip.style.display = "block";
+    positionTooltip(tooltip);
+  }
+
+  function positionTooltip(tooltip) {
+    if (!tooltip) tooltip = document.getElementById("cursor-tooltip");
+    if (!tooltip || tooltip.style.display === "none") return;
+
+    // Set provisional position so we can measure the rendered box, then
+    // clamp it to the viewport so it never bleeds off the edge.
     tooltip.style.left = lastCursorX + 14 + "px";
     tooltip.style.top = lastCursorY - 40 + "px";
+
+    var rect = tooltip.getBoundingClientRect();
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var margin = 8;
+
+    var left = lastCursorX + 14;
+    var top = lastCursorY - 40;
+    if (left + rect.width > vw - margin) {
+      // Flip to the left side of the cursor.
+      left = lastCursorX - rect.width - 14;
+    }
+    if (left < margin) left = margin;
+    if (top + rect.height > vh - margin) {
+      top = vh - rect.height - margin;
+    }
+    if (top < margin) top = margin;
+
+    tooltip.style.left = left + "px";
+    tooltip.style.top = top + "px";
   }
 
   // -- Mouse tracking -------------------------------------------------------
@@ -96,11 +125,7 @@
     document.addEventListener("mousemove", function (evt) {
       lastCursorX = evt.clientX;
       lastCursorY = evt.clientY;
-      var tooltip = document.getElementById("cursor-tooltip");
-      if (tooltip && tooltip.style.display !== "none") {
-        tooltip.style.left = lastCursorX + 14 + "px";
-        tooltip.style.top = lastCursorY - 40 + "px";
-      }
+      positionTooltip();
     });
   }
 

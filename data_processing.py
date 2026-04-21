@@ -40,58 +40,241 @@ def discover_output_folders(retrievals_dir: Path, suffix: str) -> Dict[str, Path
     return found
 
 
+def _parse_line_entry(raw_line: str) -> Optional[dict]:
+    """Parse a single line-list row (commented or not).
+
+    Returns a dict with keys:
+        center, lower, upper, element, ion, order, inline_comment,
+        excluded (True iff the source line was commented out)
+    or None if the line is blank / a pure header comment / unparseable.
+    """
+    stripped = raw_line.strip()
+    if not stripped:
+        return None
+
+    excluded_in_source = False
+    payload = stripped
+    if payload.startswith("#"):
+        # Could be (a) a header/doc comment, or (b) a commented-out entry.
+        payload = payload.lstrip("#").strip()
+        if not payload:
+            return None
+        excluded_in_source = True
+
+    data_part, _, inline = payload.partition("#")
+    parts = data_part.split()
+    if len(parts) < 3:
+        return None
+    try:
+        center = float(parts[0])
+        lower = float(parts[1])
+        upper = float(parts[2])
+    except ValueError:
+        return None
+
+    element = parts[3] if len(parts) > 3 else "Unknown"
+    ion = parts[4] if len(parts) > 4 else "1"
+    order = parts[5] if len(parts) > 5 else "0"
+    inline_comment = inline.strip() if inline else ""
+
+    return dict(
+        center=center,
+        lower=lower,
+        upper=upper,
+        element=element,
+        ion=ion,
+        order=order,
+        inline_comment=inline_comment,
+        excluded=excluded_in_source,
+    )
+
+
 def load_line_list(path: Path) -> List[dict]:
-    """Load line list from 5-column text file."""
+    """Load line list preserving commented-out entries as excluded regions.
+
+    Each returned dict carries the original lower/upper and the source
+    excluded flag so the curated save can compute diffs and preserve the
+    full file fidelity (6-col format + inline comments).
+    """
     entries: List[dict] = []
     with open(path) as fh:
-        for line in fh:
-            line = line.split("#")[0].strip()
-            if not line:
+        for raw in fh:
+            parsed = _parse_line_entry(raw)
+            if parsed is None:
                 continue
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            try:
-                cen = float(parts[0])
-                lower = float(parts[1])
-                upper = float(parts[2])
-                elem = parts[3] if len(parts) > 3 else "Unknown"
-                ion = parts[4] if len(parts) > 4 else "1"
-            except ValueError:
-                continue
-            entries.append(
-                dict(center=cen, lower=lower, upper=upper, element=elem, ion=ion)
-            )
+            idx = len(entries)
+            parsed["original_idx"] = idx
+            parsed["original_lower"] = parsed["lower"]
+            parsed["original_upper"] = parsed["upper"]
+            parsed["original_excluded"] = parsed["excluded"]
+            parsed["added"] = False
+            entries.append(parsed)
     return entries
 
 
+def _format_entry_line(e: dict) -> str:
+    """Format a single entry as a fixed-width data row (without # prefix).
+
+    Preserves the 6-column format: center lower upper element ion order.
+    """
+    lower = float(e["lower"])
+    upper = float(e["upper"])
+    center = float(e.get("center", 0.5 * (lower + upper)))
+    element = str(e.get("element", "Unknown"))
+    ion = str(e.get("ion", "1"))
+    order = str(e.get("order", "0"))
+    return (
+        f"{center:<10.4f} {lower:<10.4f} {upper:<10.4f}"
+        f" {element:<10s} {ion:<4s} {order}"
+    )
+
+
+def save_curated_line_list(
+    dest_dir: Path,
+    suffix: str,
+    entries: List[dict],
+    timestamp: Optional[str] = None,
+) -> Path:
+    """Write a curated line list to a NEW timestamped file.
+
+    Does NOT overwrite the source file. Returns the resolved path.
+
+    File layout:
+      # header with counts
+      # format comment
+      <uncommented data rows, tagged if ADJUSTED/ADDED>
+      <# prefixed excluded rows, tagged EXCLUDED>
+
+    Entry fields consulted:
+      center, lower, upper, element, ion, order, inline_comment,
+      excluded, added, original_lower, original_upper, original_excluded
+    """
+    import os
+    import tempfile
+    from datetime import datetime
+
+    ts = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out_path = dest_dir / f"line_list_{suffix}_curated_{ts}.txt"
+
+    original_count = sum(
+        1 for e in entries if not e.get("added", False) and not e.get(
+            "original_excluded", False
+        )
+    )
+    deleted_count = sum(
+        1
+        for e in entries
+        if not e.get("added", False)
+        and e.get("excluded", False)
+        and not e.get("original_excluded", False)
+    )
+    modified_count = 0
+    for e in entries:
+        if e.get("added") or e.get("excluded"):
+            continue
+        o_lo = e.get("original_lower")
+        o_hi = e.get("original_upper")
+        if o_lo is None or o_hi is None:
+            continue
+        if abs(float(e["lower"]) - float(o_lo)) > 1e-6 or abs(
+            float(e["upper"]) - float(o_hi)
+        ) > 1e-6:
+            modified_count += 1
+    added_count = sum(
+        1 for e in entries if e.get("added", False) and not e.get("excluded", False)
+    )
+    final_count = sum(1 for e in entries if not e.get("excluded", False))
+
+    def _wlen_key(e):
+        return float(e.get("center", 0.5 * (float(e["lower"]) + float(e["upper"]))))
+
+    active = sorted(
+        (e for e in entries if not e.get("excluded", False)), key=_wlen_key
+    )
+    excluded = sorted(
+        (e for e in entries if e.get("excluded", False)), key=_wlen_key
+    )
+
+    with tempfile.NamedTemporaryFile(
+        "w", dir=str(dest_dir), delete=False, suffix=".tmp"
+    ) as fh:
+        tmp_path = fh.name
+        fh.write(f"# ASAP curated line list — suffix: {suffix} — {ts}\n")
+        fh.write(
+            f"# Original: {original_count} | Deleted: {deleted_count}"
+            f" | Modified: {modified_count} | Added: {added_count}"
+            f" | Final: {final_count}\n"
+        )
+        fh.write(
+            "# Format: center_wvl(nm) lower_wvl(nm) upper_wvl(nm) element ion order\n"
+        )
+
+        for e in active:
+            row = _format_entry_line(e)
+            tags: List[str] = []
+            if e.get("added"):
+                tags.append("ADDED")
+            else:
+                if e.get("original_excluded", False):
+                    tags.append("RESTORED")
+                o_lo = e.get("original_lower")
+                o_hi = e.get("original_upper")
+                if o_lo is not None and o_hi is not None and (
+                    abs(float(e["lower"]) - float(o_lo)) > 1e-6
+                    or abs(float(e["upper"]) - float(o_hi)) > 1e-6
+                ):
+                    tags.append(
+                        f"ADJUSTED (was: {float(o_lo):.4f} \u2013 {float(o_hi):.4f})"
+                    )
+            inline = e.get("inline_comment", "") or ""
+            suffix_parts: List[str] = []
+            if inline:
+                suffix_parts.append(inline)
+            suffix_parts.extend(tags)
+            line_out = row
+            if suffix_parts:
+                line_out = line_out + "  # " + " | ".join(suffix_parts)
+            fh.write(line_out + "\n")
+
+        if excluded:
+            fh.write("#\n# --- Excluded regions ---\n")
+            for e in excluded:
+                row = _format_entry_line(e)
+                tags = ["EXCLUDED"]
+                if not e.get("original_excluded", False) and not e.get("added", False):
+                    tags.append("removed in session")
+                inline = e.get("inline_comment", "") or ""
+                suffix_parts = []
+                if inline:
+                    suffix_parts.append(inline)
+                suffix_parts.extend(tags)
+                fh.write(f"# {row}  # " + " | ".join(suffix_parts) + "\n")
+
+    os.replace(tmp_path, str(out_path))
+    return out_path
+
+
 def save_line_list(path: Path, entries: List[dict]) -> None:
-    """Save line list to 5-column text file.
+    """Deprecated: kept for backward compatibility with any external callers.
 
-    [H4 FIX] Does NOT mutate the input dicts — uses a local variable for the
-    computed center so the caller's data stays intact.
-
-    [M10 FIX] Writes to a temporary file first, then atomically replaces the
-    target to avoid data loss if the process is interrupted mid-write.
+    Writes the ACTIVE (non-excluded) entries in the 6-column format to `path`.
+    New code should use `save_curated_line_list` which never overwrites and
+    carries full audit info.
     """
     import os
     import tempfile
 
     with tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, delete=False, suffix=".tmp"
+        "w", dir=str(path.parent), delete=False, suffix=".tmp"
     ) as fh:
         tmp_path = fh.name
-        fh.write("# center    lower    upper    element    ion\n")
+        fh.write("# center    lower    upper    element    ion    order\n")
         for e in entries:
-            lower = float(e["lower"])
-            upper = float(e["upper"])
-            center = float(e.get("center", 0.5 * (lower + upper)))
-            element = str(e.get("element", "Unknown"))
-            ion = str(e.get("ion", "1"))
-            fh.write(
-                f"{center:<10.4f} {lower:<10.4f} {upper:<10.4f}"
-                f" {element:<10s} {ion}\n"
-            )
+            if e.get("excluded", False):
+                continue
+            fh.write(_format_entry_line(e) + "\n")
     os.replace(tmp_path, str(path))
 
 
@@ -251,9 +434,16 @@ def compute_custom_region_chi2(
 def summarize_region_chi2(
     fit_data_cache: dict, line_list_entries: List[dict]
 ) -> List[dict]:
-    """Compute chi2 summary stats for all line-list regions."""
+    """Compute chi2 summary stats for active (non-excluded) line-list regions.
+
+    `region_idx` (0-based) on each summary row refers to the position in
+    the input `line_list_entries` list — this matches the store indices used
+    by the Dash callbacks so that navigation and exclusion stay in sync.
+    """
     summary = []
-    for e in line_list_entries:
+    for idx, e in enumerate(line_list_entries):
+        if e.get("excluded", False):
+            continue
         per_star, npix = [], []
         for fd in fit_data_cache.values():
             c, n = compute_region_chi2_for_star(fd, e["lower"], e["upper"])
@@ -263,6 +453,7 @@ def summarize_region_chi2(
         if per_star:
             summary.append(
                 dict(
+                    region_idx=idx,
                     center=e["center"],
                     lower=e["lower"],
                     upper=e["upper"],
@@ -381,22 +572,21 @@ def build_dataset(
     std_resid = np.nanstd(obs_arr - fit_arr, axis=0)
 
     # Precompute hover stats for each fitted line-list region.
-    summary_lookup = {
-        (r["lower"], r["upper"], r["element"], r["ion"]): r for r in region_summary
-    }
+    # `region_idx` here is 1-based (matches the front-end tooltip) but maps
+    # 1:1 to the entry's position in `ll_entries` via (region_idx - 1).
+    summary_lookup = {r["region_idx"]: r for r in region_summary}
     resid_data = {
         "common_w": common_w,
         "mean_resid": mean_resid,
         "std_resid": std_resid,
     }
     ll_hover_stats = []
-    for i, e in enumerate(ll_entries, start=1):
-        key = (e["lower"], e["upper"], e["element"], e["ion"])
-        rsum = summary_lookup.get(key)
+    for i, e in enumerate(ll_entries):
+        rsum = summary_lookup.get(i)
         resid = compute_residual_metrics(resid_data, e["lower"], e["upper"])
         ll_hover_stats.append(
             dict(
-                region_idx=i,
+                region_idx=i + 1,
                 lower=e["lower"],
                 upper=e["upper"],
                 center=e["center"],
