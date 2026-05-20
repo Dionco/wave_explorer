@@ -1,5 +1,5 @@
 """
-Table Filtering Callbacks
+Table & Heat-strip Refresh Callbacks
 
 Uses @app.callback (instance-scoped) to prevent duplicate registration
 on Dash hot-reload.
@@ -7,33 +7,44 @@ on Dash hot-reload.
 
 from dash import Input, Output
 
-from ..layout import build_table_row
+from ..layout import build_heatstrip_regions, build_table_row
 
 
 def register_table_callbacks(app, dataset):
-    """Register table filtering callbacks."""
+    """Register derived-view refresh callbacks (table body + heat-strip)."""
 
     all_rows = dataset["region_summary"]
+    common_w = dataset["common_w"]
+    min_w = float(common_w[0])
+    max_w = float(common_w[-1])
+    chi2_map = {
+        int(r["region_idx"]): float(r["med_chi2"]) for r in all_rows
+    }
 
-    # Re-render the table body whenever:
-    #   - the element filter changes, OR
-    #   - the live ll-entries store changes (e.g. save baselines new state), OR
-    #   - the pending-changes store changes (e.g. user toggles exclude/include).
-    # This keeps the per-row include/exclude button label + style in sync
-    # with the effective excluded state of each region.
+    # Re-render the table body whenever the ll-entries store or
+    # pending-changes store change, so per-row include/exclude buttons
+    # stay in sync with the effective excluded state.
     @app.callback(
         Output("table-body", "children"),
-        Input("elem-filter", "value"),
         Input("ll-entries-store", "data"),
         Input("pending-changes-store", "data"),
     )
-    def filter_table(elem_filter, ll_entries_data, pending_changes):
-        rows = (
-            all_rows
-            if elem_filter == "ALL"
-            else [r for r in all_rows if r["element"] == elem_filter]
-        )
+    def refresh_table(ll_entries_data, pending_changes):
         return [
             build_table_row(i, row, ll_entries_data, pending_changes)
-            for i, row in enumerate(rows[:50])
+            for i, row in enumerate(all_rows[:50])
         ]
+
+    # Re-render the heat-strip region blocks on the same triggers so the
+    # mini-map reflects pending drags / exclusions / additions. The
+    # navigation viewport is a separate element handled entirely
+    # client-side by heatstrip.js, so it is untouched here.
+    @app.callback(
+        Output("heatstrip-regions", "children"),
+        Input("ll-entries-store", "data"),
+        Input("pending-changes-store", "data"),
+    )
+    def refresh_heatstrip(ll_entries_data, pending_changes):
+        return build_heatstrip_regions(
+            ll_entries_data, pending_changes, chi2_map, min_w, max_w
+        )

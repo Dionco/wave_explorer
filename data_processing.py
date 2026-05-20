@@ -284,9 +284,19 @@ def resolve_line_list_path(
     suffix: str,
     base_dir: Path,
 ) -> Path:
-    """Resolve line list path: explicit > detected > default candidate."""
+    """Resolve line list path: explicit > detected > default candidate.
+
+    When stars disagree on `linelistfile` (e.g. one star points at a
+    per-star curated override like `<star>/line_list_filtered.txt` while
+    the rest share a common list), pick the path used by the majority.
+    The minority is assumed to be a per-star override that shouldn't
+    drive the global visualization. Only raise when there is no clear
+    majority (tie between two distinct paths).
+    """
     if requested_path:
         return Path(requested_path).expanduser().resolve()
+
+    from collections import Counter
 
     detected: List[str] = []
     for folder_path in found.values():
@@ -299,13 +309,19 @@ def resolve_line_list_path(
         if p:
             detected.append(str(Path(p).expanduser().resolve()))
 
-    unique = sorted(set(detected))
-    if len(unique) == 1:
-        return Path(unique[0])
-    if len(unique) > 1:
+    counts = Counter(detected)
+    if len(counts) == 1:
+        return Path(next(iter(counts)))
+    if len(counts) > 1:
+        ranked = counts.most_common()
+        top_count = ranked[0][1]
+        leaders = [path for path, c in ranked if c == top_count]
+        if len(leaders) == 1:
+            return Path(leaders[0])
         raise RuntimeError(
-            f"Multiple line lists detected for suffix '{suffix}'. "
-            f"Set --line-list.\n" + "\n".join(unique)
+            f"Multiple line lists detected for suffix '{suffix}' with "
+            f"no clear majority. Set --line-list.\n"
+            + "\n".join(f"  {c}x  {p}" for p, c in ranked)
         )
 
     candidate = base_dir / "line_lists" / f"line_list_{suffix}.txt"

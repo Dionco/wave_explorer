@@ -11,7 +11,7 @@ from dash import Dash, Input, Output, State
 from .callbacks import register_all_callbacks
 from .data_processing import build_dataset
 from .figure_builder import build_base_figure
-from .layout import build_layout, initial_candidate_range
+from .layout import build_layout
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -28,11 +28,9 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
     max_w = float(dataset["common_w"][-1])
     all_rows = dataset["region_summary"]
 
-    init_lo, init_hi = initial_candidate_range(dataset, min_w, max_w)
     base_fig = build_base_figure(
         dataset,
         debug_hover=debug_hover,
-        initial_candidate=(init_lo, init_hi),
     )
 
     app = Dash(__name__, suppress_callback_exceptions=True)

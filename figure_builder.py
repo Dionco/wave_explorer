@@ -22,10 +22,10 @@ _LL_FILL = C["ll_fill"]
 _LL_LINE = C["ll_line"]
 
 
-_ADDED_FILL = "rgba(88, 209, 235, 0.20)"
-_ADDED_LINE = "rgba(88, 209, 235, 0.95)"
-_EXCLUDED_FILL = "rgba(248, 81, 73, 0.06)"
-_EXCLUDED_LINE = "rgba(248, 81, 73, 0.40)"
+_ADDED_FILL = "rgba(179, 85, 59, 0.18)"
+_ADDED_LINE = "rgba(179, 85, 59, 0.90)"
+_EXCLUDED_FILL = "rgba(156, 61, 46, 0.07)"
+_EXCLUDED_LINE = "rgba(156, 61, 46, 0.42)"
 
 
 def _shape_style(entry: dict):
@@ -79,7 +79,7 @@ def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
             x1=1,
             y0=0,
             y1=0,
-            line=dict(color="rgba(120,130,150,0.55)", width=1),
+            line=dict(color="rgba(117,112,95,0.55)", width=1),
             layer="below",
         )
     )
@@ -92,7 +92,7 @@ def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
             x1=1,
             y0=0.05,
             y1=0.05,
-            line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+            line=dict(color="rgba(117,112,95,0.30)", width=1, dash="dot"),
             layer="below",
         )
     )
@@ -105,7 +105,7 @@ def _ll_shapes(ll_entries: List[dict]) -> List[dict]:
             x1=1,
             y0=-0.05,
             y1=-0.05,
-            line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+            line=dict(color="rgba(117,112,95,0.30)", width=1, dash="dot"),
             layer="below",
         )
     )
@@ -136,7 +136,7 @@ def _cand_shapes(lo: float, hi: float) -> List[dict]:
             x1=hi,
             y0=0,
             y1=1,
-            fillcolor="rgba(255,167,38,0.13)",
+            fillcolor="rgba(179,85,59,0.11)",
             line=dict(color=C["cand_line"], width=1.2),
             layer="below",
         ),
@@ -293,7 +293,7 @@ def build_base_figure(
             mode="lines",
             line=dict(width=0),
             fill="tonexty",
-            fillcolor="rgba(208,218,231,0.10)",
+            fillcolor="rgba(74,70,57,0.09)",
             showlegend=False,
             hoverinfo="skip",
         ),
@@ -320,7 +320,7 @@ def build_base_figure(
             mode="lines",
             line=dict(width=0),
             fill="tonexty",
-            fillcolor="rgba(88,209,235,0.10)",
+            fillcolor="rgba(179,85,59,0.10)",
             showlegend=False,
             hoverinfo="skip",
         ),
@@ -335,7 +335,8 @@ def build_base_figure(
             y=mean_obs_s,
             mode="lines",
             name=f"Mean observed (n={n})",
-            line=dict(color=C["obs"], width=1.2),
+            line=dict(color=C["obs"], width=1.3),
+            opacity=0.7,
             hoverinfo="skip",
         ),
         row=1,
@@ -347,7 +348,7 @@ def build_base_figure(
             y=mean_fit_s,
             mode="lines",
             name="Mean model fit",
-            line=dict(color=C["fit"], width=1.2),
+            line=dict(color=C["fit"], width=1.7),
             hoverinfo="skip",
         ),
         row=1,
@@ -374,7 +375,7 @@ def build_base_figure(
             mode="lines",
             line=dict(width=0),
             fill="tonexty",
-            fillcolor="rgba(255,167,38,0.10)",
+            fillcolor="rgba(74,70,57,0.09)",
             showlegend=False,
             hoverinfo="skip",
         ),
@@ -387,7 +388,7 @@ def build_base_figure(
             y=mean_resid_s,
             mode="lines",
             name="Mean residual",
-            line=dict(color=C["resid"], width=1.1),
+            line=dict(color=C["resid"], width=1.2),
             hoverinfo="skip",
         ),
         row=2,
@@ -411,9 +412,9 @@ def build_base_figure(
 
     # ── Base layout ────────────────────────────────────────────
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=C["surf"],
-        plot_bgcolor="#0d1117",
+        plot_bgcolor=C["surf"],
         height=820,
         font=dict(family=MONO, color=C["muted"], size=11),
         margin=dict(l=62, r=24, t=40, b=50),
@@ -477,17 +478,19 @@ def build_base_figure(
         yaxis=dict(
             title_text="Norm. flux",
             title_font=dict(size=11),
-            gridcolor="#1c2333",
+            gridcolor="#e6dfcb",
             gridwidth=1,
-            zerolinecolor="#1c2333",
+            zerolinecolor="#d8cfb4",
+            linecolor="#d8cfb4",
             tickfont=dict(size=10),
         ),
         yaxis2=dict(
             title_text="Residual",
             title_font=dict(size=11),
-            gridcolor="#1c2333",
+            gridcolor="#e6dfcb",
             gridwidth=1,
-            zerolinecolor="#1c2333",
+            zerolinecolor="#d8cfb4",
+            linecolor="#d8cfb4",
             tickfont=dict(size=10),
             range=[-0.2, 0.2],
             autorange=False,
@@ -497,8 +500,9 @@ def build_base_figure(
     fig.update_xaxes(
         title_text="Wavelength (nm)",
         title_font=dict(size=11),
-        gridcolor="#1c2333",
+        gridcolor="#e6dfcb",
         gridwidth=1,
+        linecolor="#d8cfb4",
         tickfont=dict(size=10),
         fixedrange=False,
         matches="x",
@@ -506,7 +510,8 @@ def build_base_figure(
         col=1,
     )
     fig.update_xaxes(
-        gridcolor="#1c2333",
+        gridcolor="#e6dfcb",
+        linecolor="#d8cfb4",
         fixedrange=False,
         row=1,
         col=1,

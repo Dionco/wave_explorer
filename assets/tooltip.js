@@ -60,7 +60,7 @@
         : "\u2014";
 
     tooltip.innerHTML =
-      '<div style="font-weight:bold;color:#58d1eb;margin-bottom:4px">' +
+      '<div style="font-weight:bold;color:#b3553b;margin-bottom:4px">' +
       "Region #" +
       stat.region_idx +
       "</div>" +
@@ -73,7 +73,7 @@
       "<div>Center: " +
       formatValue(stat.center, 3) +
       " nm</div>" +
-      '<div style="border-top:1px solid rgba(88,209,235,0.3);margin:4px 0;padding-top:4px">' +
+      '<div style="border-top:1px solid rgba(179,85,59,0.3);margin:4px 0;padding-top:4px">' +
       "<div>\u03c7\u00b2/N: " +
       chi2Str +
       "</div>" +

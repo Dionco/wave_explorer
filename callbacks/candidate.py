@@ -9,12 +9,11 @@ registration on Dash hot-reload.
 from typing import List, Optional, Tuple
 
 import numpy as np
-from dash import ALL, Input, Output, Patch, State, no_update
+from dash import ALL, Input, Output, Patch, no_update
 from dash import ctx as dash_ctx
 from dash import html
 
 from ..data_processing import compute_custom_region_chi2, compute_residual_metrics
-from ..figure_builder import _cand_shapes
 from ..layout import render_stats
 from ..theme import C, MONO
 
@@ -22,23 +21,6 @@ from ..theme import C, MONO
 # ══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-def parse_zoom_range(
-    relayout_data: Optional[dict],
-) -> Optional[Tuple[float, float]]:
-    if not relayout_data:
-        return None
-    if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
-        return (
-            float(relayout_data["xaxis.range[0]"]),
-            float(relayout_data["xaxis.range[1]"]),
-        )
-    if "xaxis.range" in relayout_data:
-        rr = relayout_data["xaxis.range"]
-        if isinstance(rr, list) and len(rr) == 2:
-            return float(rr[0]), float(rr[1])
-    return None
 
 
 def clamp(lo: float, hi: float, mn: float, mx: float) -> Tuple[float, float]:
@@ -51,14 +33,15 @@ def clamp(lo: float, hi: float, mn: float, mx: float) -> Tuple[float, float]:
 # Shape builders
 # ══════════════════════════════════════════════════════════════════════════════
 
-SAVED_FILL = "rgba(62, 173, 90, 0.18)"
-SAVED_LINE = "rgba(40, 150, 70, 0.80)"
-PENDING_FILL = "rgba(255, 167, 38, 0.25)"
-PENDING_LINE = "rgba(245, 130, 10, 0.95)"
-ADDED_FILL = "rgba(88, 209, 235, 0.20)"
-ADDED_LINE = "rgba(88, 209, 235, 0.95)"
-EXCLUDED_FILL = "rgba(248, 81, 73, 0.06)"
-EXCLUDED_LINE = "rgba(248, 81, 73, 0.40)"
+# Warm editorial region-band palette (Claude Design handoff).
+SAVED_FILL = "rgba(79, 122, 77, 0.14)"     # good green
+SAVED_LINE = "rgba(79, 122, 77, 0.55)"
+PENDING_FILL = "rgba(184, 136, 41, 0.22)"  # fair amber
+PENDING_LINE = "rgba(184, 136, 41, 0.90)"
+ADDED_FILL = "rgba(179, 85, 59, 0.18)"     # terracotta accent
+ADDED_LINE = "rgba(179, 85, 59, 0.90)"
+EXCLUDED_FILL = "rgba(156, 61, 46, 0.07)"  # bad red, faint
+EXCLUDED_LINE = "rgba(156, 61, 46, 0.42)"
 
 # [H3 FIX] Residual reference lines, expressed as shapes so they survive
 # Patch() updates (which replace the entire shapes array).
@@ -71,7 +54,7 @@ HLINE_SHAPE = dict(
     x1=1,
     y0=0,
     y1=0,
-    line=dict(color="rgba(120,130,150,0.55)", width=1),
+    line=dict(color="rgba(117,112,95,0.55)", width=1),
     layer="below",
 )
 
@@ -83,7 +66,7 @@ HLINE_POS_GUIDE = dict(
     x1=1,
     y0=0.05,
     y1=0.05,
-    line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+    line=dict(color="rgba(117,112,95,0.30)", width=1, dash="dot"),
     layer="below",
 )
 
@@ -95,7 +78,7 @@ HLINE_NEG_GUIDE = dict(
     x1=1,
     y0=-0.05,
     y1=-0.05,
-    line=dict(color="rgba(120,130,150,0.25)", width=1, dash="dot"),
+    line=dict(color="rgba(117,112,95,0.30)", width=1, dash="dot"),
     layer="below",
 )
 
@@ -172,144 +155,60 @@ def register_candidate_callbacks(
     """Register all candidate region callbacks."""
 
     # ════════════════════════════════════════════════════════════
-    # Callback 1 – update candidate bounds
+    # Callback 1 – nav-btn click selects the region
+    #
+    # The Candidate Region panel was removed; the old update_candidate_bounds
+    # callback wrote nav clicks into candidate-range. Now a nav click
+    # writes directly to selected-region-store so live stats and the
+    # selected-region header both reflect the picked region.
     # ════════════════════════════════════════════════════════════
     @app.callback(
-        Output("candidate-range", "value"),
-        Output("manual-lo", "value"),
-        Output("manual-hi", "value"),
-        Output("src-hint", "children", allow_duplicate=True),
-        Output("src-hint", "className", allow_duplicate=True),
-        Input("use-zoom-btn", "n_clicks"),
-        Input("apply-manual-btn", "n_clicks"),
-        Input("candidate-range", "value"),
+        Output("selected-region-store", "data", allow_duplicate=True),
         Input({"type": "nav-btn", "index": ALL}, "n_clicks"),
-        State("manual-lo", "value"),
-        State("manual-hi", "value"),
-        State("spectrum-graph", "relayoutData"),
-        # [L2 FIX] Read live ll-entries so nav-btn uses current bounds,
-        # not the stale all_rows closure from registration time.
-        State("ll-entries-store", "data"),
         prevent_initial_call=True,
     )
-    def update_candidate_bounds(
-        zoom_clicks,
-        apply_clicks,
-        cand_range,
-        nav_clicks,
-        manual_lo,
-        manual_hi,
-        relayout_data,
-        ll_entries_data,
-    ):
+    def nav_to_region(nav_clicks):
+        if not any(nav_clicks or []):
+            return no_update
         tid = dash_ctx.triggered_id
+        if not isinstance(tid, dict) or tid.get("type") != "nav-btn":
+            return no_update
+        idx = tid.get("index")
+        if idx is None:
+            return no_update
+        return {"region_idx": int(idx)}
 
-        if isinstance(tid, dict) and tid.get("type") == "nav-btn":
-            idx = tid["index"]
-            if ll_entries_data and 0 <= idx < len(ll_entries_data):
-                e = ll_entries_data[idx]
-                lo, hi = clamp(e["lower"], e["upper"], min_w, max_w)
-                return (
-                    [lo, hi],
-                    lo,
-                    hi,
-                    (
-                        f"Navigated to {e.get('element', '?')} {e.get('ion', '?')}"
-                        f"  {lo:.3f} \u2013 {hi:.3f} nm"
-                    ),
-                    "src-hint zoom",
-                )
-
-        if tid == "use-zoom-btn":
-            zoom = parse_zoom_range(relayout_data)
-            if zoom is None:
-                return (
-                    no_update,
-                    no_update,
-                    no_update,
-                    "No active zoom \u2014 draw a zoom box on the spectrum first.",
-                    "src-hint none",
-                )
-            lo, hi = clamp(zoom[0], zoom[1], min_w, max_w)
-            return (
-                [lo, hi],
-                lo,
-                hi,
-                f"Set from graph zoom  \u00b7  {lo:.3f} \u2013 {hi:.3f} nm",
-                "src-hint zoom",
-            )
-
-        if tid == "apply-manual-btn":
-            if manual_lo is None or manual_hi is None:
-                return (
-                    no_update,
-                    no_update,
-                    no_update,
-                    "Enter both bounds and click Apply.",
-                    "src-hint none",
-                )
-            lo, hi = clamp(float(manual_lo), float(manual_hi), min_w, max_w)
-            return (
-                [lo, hi],
-                lo,
-                hi,
-                f"Set from manual input  \u00b7  {lo:.3f} \u2013 {hi:.3f} nm",
-                "src-hint manual",
-            )
-
-        if tid == "candidate-range" and cand_range:
-            lo, hi = clamp(cand_range[0], cand_range[1], min_w, max_w)
-            return (
-                no_update,
-                lo,
-                hi,
-                f"Adjusted via slider  \u00b7  {lo:.3f} \u2013 {hi:.3f} nm",
-                "src-hint slider",
-            )
-
-        return no_update, no_update, no_update, no_update, no_update
-
-    # ════════════════════════════════════════════════════════════
-    # Callback 2 – apply drawn region to candidate slider
-    # ════════════════════════════════════════════════════════════
-    @app.callback(
-        Output("candidate-range", "value", allow_duplicate=True),
-        Output("manual-lo", "value", allow_duplicate=True),
-        Output("manual-hi", "value", allow_duplicate=True),
-        Output("src-hint", "children", allow_duplicate=True),
-        Output("src-hint", "className", allow_duplicate=True),
-        Input("draw-region-store", "data"),
-        prevent_initial_call=True,
-    )
-    def apply_draw_region(draw_data):
-        if not draw_data:
-            return no_update, no_update, no_update, no_update, no_update
-        lo = draw_data.get("lo")
-        hi = draw_data.get("hi")
-        if lo is None or hi is None:
-            return no_update, no_update, no_update, no_update, no_update
-        lo, hi = clamp(float(lo), float(hi), min_w, max_w)
-        return (
-            [lo, hi],
-            lo,
-            hi,
-            f"Region drawn  \u00b7  {lo:.3f} \u2013 {hi:.3f} nm",
-            "src-hint zoom",
-        )
 
     # ════════════════════════════════════════════════════════════
     # Callback 3 – live stats (no figure output)
+    #
+    # Driven by the region clicked in the main figure
+    # (selected-region-store, populated by the clientside clickData
+    # handler in app.py, or by the table nav-btn via Callback 1).
+    # Bounds follow pending edits so stats track drags before save.
     # ════════════════════════════════════════════════════════════
     @app.callback(
         Output("candidate-stats", "children"),
         Output("status-range", "children"),
-        Input("candidate-range", "value"),
+        Input("selected-region-store", "data"),
+        Input("ll-entries-store", "data"),
+        Input("pending-changes-store", "data"),
     )
-    def update_stats(candidate_range):
-        if not candidate_range or len(candidate_range) != 2:
-            return "Select a candidate range.", ""
+    def update_stats(selected_region, ll_entries_data, pending_changes):
+        lo = hi = None
+        if selected_region and ll_entries_data:
+            idx = selected_region.get("region_idx")
+            if idx is not None and 0 <= idx < len(ll_entries_data):
+                base = ll_entries_data[idx]
+                staged = (pending_changes or {}).get(str(idx))
+                live = staged if isinstance(staged, dict) else base
+                lo = float(live["lower"])
+                hi = float(live["upper"])
 
-        lo, hi = clamp(candidate_range[0], candidate_range[1], min_w, max_w)
+        if lo is None or hi is None:
+            return "Click a region in the spectrum to see statistics.", ""
+
+        lo, hi = clamp(lo, hi, min_w, max_w)
         chi2 = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
         resid = compute_residual_metrics(dataset, lo, hi)
 
@@ -357,38 +256,12 @@ def register_candidate_callbacks(
     # ════════════════════════════════════════════════════════════
     @app.callback(
         Output("spectrum-graph", "figure"),
-        Input("candidate-range", "value"),
         Input("ll-entries-store", "data"),
         Input("pending-changes-store", "data"),
         prevent_initial_call=True,
     )
-    def update_figure_shapes(candidate_range, ll_entries_data, pending_changes):
+    def update_figure_shapes(ll_entries_data, pending_changes):
         shapes = _build_ll_shapes(ll_entries_data, pending_changes)
-        if candidate_range and len(candidate_range) == 2:
-            lo, hi = clamp(candidate_range[0], candidate_range[1], min_w, max_w)
-            shapes += _cand_shapes(lo, hi)
         fig_patch = Patch()
         fig_patch["layout"]["shapes"] = shapes
         return fig_patch
-
-    # ════════════════════════════════════════════════════════════
-    # Callback 5 – zoom hint
-    # ════════════════════════════════════════════════════════════
-    @app.callback(
-        Output("src-hint", "children", allow_duplicate=True),
-        Output("src-hint", "className", allow_duplicate=True),
-        Input("spectrum-graph", "relayoutData"),
-        prevent_initial_call=True,
-    )
-    def reflect_zoom_hint(relayout_data):
-        zoom = parse_zoom_range(relayout_data)
-        if zoom is None:
-            return no_update, no_update
-        lo, hi = clamp(zoom[0], zoom[1], min_w, max_w)
-        return (
-            (
-                f"Zoom detected  {lo:.3f} \u2013 {hi:.3f} nm"
-                f"  \u00b7  click \u2295 Use Zoom to apply"
-            ),
-            "src-hint zoom",
-        )

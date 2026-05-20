@@ -10,6 +10,21 @@ from dash import dcc, html
 
 from .theme import C, MONO, _fmt, chi2_color, chi2_label, chi2_pct
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Brand mark — abstract spectral-peak SVG (warm editorial identity).
+# Encoded as a data URI so it can be served through a plain html.Img without
+# needing an extra static asset or raw-HTML rendering.
+# ══════════════════════════════════════════════════════════════════════════════
+
+BRAND_MARK = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'>"
+    "<path d='M2 18 L6 18 L8 12 L10 18 L12 6 L14 18 L16 9 L18 18 L22 18' "
+    "stroke='%23b3553b' stroke-width='2' stroke-linecap='round' "
+    "stroke-linejoin='round'/>"
+    "<circle cx='12' cy='6' r='1.5' fill='%231a1814'/></svg>"
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Initial candidate range
@@ -64,9 +79,9 @@ def build_header(dataset: dict) -> html.Div:
             html.Div(
                 className="asap-wordmark",
                 children=[
-                    "ASAP",
-                    html.Span("  /  ", className="wm-sep"),
-                    html.Span("Line Curation", className="wm-sub"),
+                    html.Img(src=BRAND_MARK, className="wordmark-mark", alt=""),
+                    html.Span("Wave Explorer"),
+                    html.Span("Line curation · ASAP", className="wm-sub"),
                 ],
             ),
             html.Div(
@@ -99,8 +114,7 @@ def build_header(dataset: dict) -> html.Div:
                 "\u270e Draw Region",
                 id="draw-mode-toggle",
                 n_clicks=0,
-                className="btn btn-sm btn-amber",
-                style={"marginRight": "8px"},
+                className="btn btn-sm",
             ),
             # ── Selected-region chip + per-region action buttons ──────────────
             html.Div(
@@ -168,7 +182,7 @@ def build_header(dataset: dict) -> html.Div:
                         "\u21b6 Undo",
                         id="undo-btn",
                         n_clicks=0,
-                        className="btn btn-sm btn-amber",
+                        className="btn btn-sm",
                         title="Revert the most recent change",
                         disabled=True,
                     ),
@@ -176,7 +190,7 @@ def build_header(dataset: dict) -> html.Div:
                         "\u2b73 Save Curated File",
                         id="save-changes-btn",
                         n_clicks=0,
-                        className="btn btn-sm btn-green",
+                        className="btn btn-sm btn-primary",
                     ),
                     html.Button(
                         "✕ Discard all changes",
@@ -215,146 +229,187 @@ def build_header(dataset: dict) -> html.Div:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Candidate Region Panel
+# Stats Panel
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def build_candidate_panel(
-    min_w: float, max_w: float, init_lo: float, init_hi: float
-) -> html.Div:
+_ROMAN = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V"}
+
+
+def romanize(ion) -> str:
+    """Render an ionisation stage as a Roman numeral (1 -> I, 2 -> II)."""
+    return _ROMAN.get(str(ion).strip(), str(ion))
+
+
+def _legend_swatch(color: str, label: str) -> html.Div:
     return html.Div(
-        className="card",
+        className="legend-item",
         children=[
-            html.Div("Candidate Region", className="card-title"),
-            html.Div(
-                className="btn-row",
-                children=[
-                    html.Button(
-                        "⊕  Use Zoom",
-                        id="use-zoom-btn",
-                        n_clicks=0,
-                        className="btn btn-cyan",
-                    ),
-                    html.Button(
-                        "→  Apply Manual",
-                        id="apply-manual-btn",
-                        n_clicks=0,
-                        className="btn btn-amber",
-                    ),
-                    html.Button(
-                        "＋  Add to Session",
-                        id="add-session-btn",
-                        n_clicks=0,
-                        className="btn btn-green",
-                    ),
-                ],
+            html.Span(className="legend-swatch", style={"background": color}),
+            label,
+        ],
+    )
+
+
+def build_histogram(region_summary: List[dict]) -> html.Div:
+    """A compact χ²/N distribution histogram for the fitted regions.
+
+    Static — computed once from the region summary. Bars are coloured by
+    the quality ramp so the spread of fit quality is readable at a glance.
+    """
+    bin_w = 2.0
+    n_bins = 22
+    bins = [0] * n_bins
+    vals = [
+        float(r["med_chi2"])
+        for r in region_summary
+        if r.get("med_chi2") is not None and np.isfinite(r["med_chi2"])
+    ]
+    for v in vals:
+        b = min(n_bins - 1, max(0, int(v / bin_w)))
+        bins[b] += 1
+    peak = max(bins + [1])
+
+    bars = [
+        html.Div(
+            className="hist-bar",
+            title=(
+                f"χ²/N {i * bin_w:.0f}–{(i + 1) * bin_w:.0f}"
+                f"{'+' if i == n_bins - 1 else ''}  ·  {count} region"
+                f"{'' if count == 1 else 's'}"
             ),
-            html.Div(
-                [
-                    html.Div(
-                        "Wavelength Range (nm)",
-                        className="form-label",
-                        style={"marginBottom": "12px"},
-                    ),
-                    dcc.RangeSlider(
-                        id="candidate-range",
-                        min=min_w,
-                        max=max_w,
-                        value=[init_lo, init_hi],
-                        # step=0.001 over a ~600 nm range = 600,000 discrete positions,
-                        # which causes React's Range component to blow the call stack.
-                        # Use step=0.1 here; manual inputs below still give 0.001 precision.
-                        step=0.1,
-                        allowCross=False,
-                        updatemode="mouseup",
-                        tooltip={"placement": "bottom", "always_visible": False},
-                    ),
-                ],
-                style={"marginBottom": "16px"},
-            ),
-            html.Div(
+            children=html.Div(
+                className="hist-bar-fill",
                 style={
-                    "display": "grid",
-                    "gridTemplateColumns": "1fr 1fr",
-                    "gap": "10px",
-                    "marginBottom": "4px",
+                    "height": f"{(count / peak) * 100.0:.1f}%",
+                    "background": chi2_color((i + 0.5) * bin_w),
                 },
+            ),
+        )
+        for i, count in enumerate(bins)
+    ]
+
+    return html.Div(
+        className="hist-card",
+        children=[
+            html.Div(
+                className="hist-head",
                 children=[
-                    html.Div(
-                        [
-                            html.Label("Lower  (nm)", className="form-label"),
-                            dcc.Input(
-                                id="manual-lo",
-                                type="number",
-                                value=init_lo,
-                                debounce=True,
-                                className="form-input",
-                            ),
-                        ]
-                    ),
-                    html.Div(
-                        [
-                            html.Label("Upper  (nm)", className="form-label"),
-                            dcc.Input(
-                                id="manual-hi",
-                                type="number",
-                                value=init_hi,
-                                debounce=True,
-                                className="form-input",
-                            ),
-                        ]
-                    ),
+                    html.Span("χ²/N distribution", className="eyebrow"),
+                    html.Span(f"{len(vals)} fitted regions", className="subtitle"),
                 ],
             ),
-            html.Div(id="src-hint", className="src-hint none", children="—"),
+            html.Div(className="hist-bars", children=bars),
             html.Div(
-                className="legend-row",
+                className="hist-legend",
                 children=[
-                    html.Span([
-                        html.Span(className="legend-swatch", style={
-                            "background": "rgba(62,173,90,0.35)",
-                            "border": "1px solid rgba(40,150,70,0.9)",
-                        }),
-                        "saved",
-                    ]),
-                    html.Span([
-                        html.Span(className="legend-swatch", style={
-                            "background": "rgba(255,167,38,0.4)",
-                            "border": "1px solid rgba(245,130,10,0.95)",
-                        }),
-                        "pending",
-                    ]),
-                    html.Span([
-                        html.Span(className="legend-swatch", style={
-                            "background": "rgba(88,209,235,0.4)",
-                            "border": "1px solid rgba(88,209,235,0.95)",
-                        }),
-                        "added",
-                    ]),
-                    html.Span([
-                        html.Span(className="legend-swatch", style={
-                            "background": "rgba(248,81,73,0.12)",
-                            "border": "1px dashed rgba(248,81,73,0.5)",
-                        }),
-                        "excluded",
-                    ]),
+                    _legend_swatch(C["green"], "good"),
+                    _legend_swatch(C["amber"], "fair"),
+                    _legend_swatch(C["orange"], "poor"),
+                    _legend_swatch(C["red"], "bad"),
                 ],
             ),
         ],
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Stats Panel
-# ══════════════════════════════════════════════════════════════════════════════
+def build_heatstrip_regions(
+    ll_entries,
+    pending_changes,
+    chi2_map: dict,
+    min_w: float,
+    max_w: float,
+) -> List[html.Div]:
+    """Build the per-region blocks of the heat-strip mini-map.
+
+    Shared between the initial layout build and the refresh callback so
+    the strip always reflects the effective (pending-aware) line list.
+    """
+    span = max(1e-6, max_w - min_w)
+    pending_changes = pending_changes or {}
+    blocks: List[html.Div] = []
+    for idx, entry in enumerate(ll_entries or []):
+        staged = pending_changes.get(str(idx))
+        e = staged if staged is not None else entry
+        lo = float(e["lower"])
+        hi = float(e["upper"])
+        excluded = bool(e.get("excluded", False))
+        left = (lo - min_w) / span * 100.0
+        width = max(0.18, (hi - lo) / span * 100.0)
+        c2 = chi2_map.get(idx)
+        color = chi2_color(c2) if c2 is not None else C["dim"]
+        tip = f"#{idx + 1}  ·  λ {lo:.2f}–{hi:.2f} nm"
+        if c2 is not None and np.isfinite(c2):
+            tip += f"  ·  χ²/N {c2:.2f}"
+        blocks.append(
+            html.Div(
+                className="heatstrip-region"
+                + (" excluded" if excluded else ""),
+                style={
+                    "left": f"{left:.4f}%",
+                    "width": f"{width:.4f}%",
+                    "background": color,
+                },
+                title=tip,
+            )
+        )
+    return blocks
 
 
-def build_stats_panel() -> html.Div:
+def build_heatstrip(dataset: dict, min_w: float, max_w: float) -> html.Div:
+    """Heat-strip mini-map: full-λ quality overview + navigation viewport."""
+    chi2_map = {
+        int(r["region_idx"]): float(r["med_chi2"])
+        for r in dataset["region_summary"]
+    }
+    regions = build_heatstrip_regions(
+        dataset["ll_entries"], {}, chi2_map, min_w, max_w
+    )
+    return html.Div(
+        className="heatstrip-section",
+        children=[
+            html.Div(
+                className="heatstrip-head",
+                children=[
+                    html.Span(
+                        "Quality map · full λ range", className="eyebrow"
+                    ),
+                    html.Span(
+                        "click or drag to navigate", className="subtitle"
+                    ),
+                ],
+            ),
+            html.Div(
+                id="heatstrip",
+                className="heatstrip-wrap",
+                title="Click or drag to move the spectrum view",
+                children=[
+                    html.Div(
+                        id="heatstrip-regions",
+                        className="heatstrip-regions",
+                        children=regions,
+                    ),
+                    html.Div(
+                        id="heatstrip-viewport",
+                        className="heatstrip-viewport",
+                    ),
+                ],
+                **{
+                    "data-lmin": f"{min_w:.6f}",
+                    "data-lmax": f"{max_w:.6f}",
+                },
+            ),
+        ],
+    )
+
+
+def build_stats_panel(region_summary: List[dict]) -> html.Div:
     return html.Div(
         className="card",
         children=[
             html.Div("Live Statistics", className="card-title"),
             html.Div(id="candidate-stats"),
+            build_histogram(region_summary),
         ],
     )
 
@@ -566,7 +621,6 @@ def build_table_row(
     layout build and the filter_table callback so the exclude/include
     button always reflects the effective (pending-aware) state."""
     col = chi2_color(row["med_chi2"])
-    lbl = chi2_label(row["med_chi2"])
     real_idx = int(row.get("region_idx", i))
     is_excluded = _effective_excluded(real_idx, ll_entries, pending_changes)
 
@@ -589,24 +643,8 @@ def build_table_row(
             html.Td(f"{row['center']:.3f}"),
             html.Td(f"{row['lower']:.3f} – {row['upper']:.3f}"),
             html.Td(
-                html.Span(
-                    f"{row['element']} {row['ion']}", className="elem-tag"
-                )
-            ),
-            html.Td(
                 f"{row['med_chi2']:.3f}",
                 style={"color": col, "fontWeight": "700"},
-            ),
-            html.Td(
-                html.Span(
-                    lbl,
-                    className="q-badge",
-                    style={
-                        "background": col + "22",
-                        "color": col,
-                        "border": f"1px solid {col}55",
-                    },
-                )
             ),
             html.Td(str(row["n_stars"])),
             html.Td(str(row["med_npix"])),
@@ -634,20 +672,14 @@ def build_table_row(
 
 def build_table_panel(
     region_summary: List[dict],
-    unique_elements: List[str],
     ll_entries=None,
 ) -> html.Div:
-    elem_options = [{"label": "All elements", "value": "ALL"}] + [
-        {"label": e, "value": e} for e in unique_elements
-    ]
     header_row = html.Tr(
         [
             html.Th("#"),
             html.Th("Center (nm)"),
             html.Th("Range (nm)"),
-            html.Th("Species"),
             html.Th("χ²/N med"),
-            html.Th("Quality"),
             html.Th("N★"),
             html.Th("N pix"),
             html.Th(""),
@@ -662,35 +694,9 @@ def build_table_panel(
         className="card gap-lg",
         children=[
             html.Div(
-                style={
-                    "display": "flex",
-                    "alignItems": "center",
-                    "justifyContent": "space-between",
-                    "marginBottom": "12px",
-                },
-                children=[
-                    html.Div(
-                        "Worst Fitted Regions  (top 50 by median χ²/N)",
-                        className="card-title",
-                        style={
-                            "marginBottom": 0,
-                            "borderBottom": "none",
-                            "paddingBottom": 0,
-                        },
-                    ),
-                    html.Div(
-                        style={"width": "200px"},
-                        children=[
-                            dcc.Dropdown(
-                                id="elem-filter",
-                                options=elem_options,
-                                value="ALL",
-                                clearable=False,
-                                style={"fontSize": "12px"},
-                            ),
-                        ],
-                    ),
-                ],
+                "Worst Fitted Regions  (top 50 by median χ²/N)",
+                className="card-title",
+                style={"marginBottom": "12px"},
             ),
             html.Div(
                 className="table-wrap",
@@ -709,72 +715,15 @@ def build_table_panel(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Session Panel
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def build_session_panel() -> html.Div:
-    return html.Div(
-        className="card",
-        children=[
-            html.Div(
-                style={
-                    "display": "flex",
-                    "alignItems": "center",
-                    "justifyContent": "space-between",
-                    "marginBottom": "12px",
-                },
-                children=[
-                    html.Div(
-                        "Session Candidates",
-                        className="card-title",
-                        style={
-                            "marginBottom": 0,
-                            "borderBottom": "none",
-                            "paddingBottom": 0,
-                        },
-                    ),
-                    html.Div(
-                        style={"display": "flex", "gap": "8px"},
-                        children=[
-                            html.Button(
-                                "⬇ Export",
-                                id="export-btn",
-                                n_clicks=0,
-                                className="btn btn-sm btn-amber",
-                            ),
-                            html.Button(
-                                "✕ Clear",
-                                id="clear-session-btn",
-                                n_clicks=0,
-                                className="btn btn-sm btn-danger",
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            html.Div(
-                id="session-log",
-                className="session-log",
-                children=[html.Div("No candidates added yet.", className="log-empty")],
-            ),
-            dcc.Download(id="download-session"),
-        ],
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Main Layout Builder
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div:
-    min_w = float(dataset["common_w"][0])
-    max_w = float(dataset["common_w"][-1])
-    init_lo, init_hi = initial_candidate_range(dataset, min_w, max_w)
-
-    unique_elements = sorted({e["element"] for e in dataset["region_summary"]})
     all_rows = dataset["region_summary"]
+    _common_w = dataset["common_w"]
+    _min_w = float(_common_w[0])
+    _max_w = float(_common_w[-1])
 
     ll_stats_jsonable = [
         {
@@ -841,52 +790,74 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                 children=[
                     # ── Spectrum plot ────────────────────────────────────────────────
                     html.Div(
-                        className="plot-wrap gap-md",
-                        style={"position": "relative"},
+                        className="plot-wrap",
                         children=[
-                            dcc.Graph(
-                                id="spectrum-graph",
-                                figure=base_fig,
-                                clear_on_unhover=True,
-                                config={
-                                    "scrollZoom": True,
-                                    "displaylogo": False,
-                                    "doubleClick": "reset+autosize",
-                                    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-                                    "editable": False,
-                                },
-                                style={"height": "820px"},
+                            html.Div(
+                                className="spectrum-toolbar",
+                                children=[
+                                    html.Div(
+                                        className="spectrum-toolbar-left",
+                                        children=[
+                                            html.Div(
+                                                "Spectrum", className="eyebrow"
+                                            ),
+                                            html.Div(
+                                                "Observation, fit & residuals",
+                                                className="display-md",
+                                            ),
+                                        ],
+                                    ),
+                                    html.Div(
+                                        "scroll to zoom · drag to pan · "
+                                        "double-click resets",
+                                        className="zoom-readout",
+                                    ),
+                                ],
                             ),
                             html.Div(
-                                id="drag-handles-overlay",
-                                style={
-                                    "position": "absolute",
-                                    "top": "0",
-                                    "left": "0",
-                                    "right": "0",
-                                    "bottom": "0",
-                                    "pointerEvents": "none",
-                                    "zIndex": "10",
-                                },
+                                className="spectrum-canvas-wrap",
+                                style={"position": "relative"},
+                                children=[
+                                    dcc.Graph(
+                                        id="spectrum-graph",
+                                        figure=base_fig,
+                                        clear_on_unhover=True,
+                                        config={
+                                            "scrollZoom": True,
+                                            "displaylogo": False,
+                                            "doubleClick": "reset+autosize",
+                                            "responsive": True,
+                                            "modeBarButtonsToRemove": [
+                                                "lasso2d",
+                                                "select2d",
+                                            ],
+                                            "editable": False,
+                                        },
+                                        style={"height": "820px"},
+                                    ),
+                                    html.Div(
+                                        id="drag-handles-overlay",
+                                        style={
+                                            "position": "absolute",
+                                            "top": "0",
+                                            "left": "0",
+                                            "right": "0",
+                                            "bottom": "0",
+                                            "pointerEvents": "none",
+                                            "zIndex": "10",
+                                        },
+                                    ),
+                                ],
                             ),
+                            build_heatstrip(dataset, _min_w, _max_w),
                         ],
                     ),
-                    # ── Candidate + Stats ────────────────────────────────────────────
+                    # ── Live Statistics (left) + Worst Fitted Regions (right) ──────
                     html.Div(
                         className="two-col gap-md",
                         children=[
-                            build_candidate_panel(min_w, max_w, init_lo, init_hi),
-                            build_stats_panel(),
-                        ],
-                    ),
-                    # ── Table + Session ──────────────────────────────────────────────
-                    html.Div(
-                        className="two-col gap-md",
-                        children=[
-                            build_table_panel(
-                                all_rows, unique_elements, ll_entries_jsonable
-                            ),
-                            build_session_panel(),
+                            build_stats_panel(all_rows),
+                            build_table_panel(all_rows, ll_entries_jsonable),
                         ],
                     ),
                     html.Div(
@@ -914,7 +885,6 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                 ],
             ),
             # ── Hidden state stores ────────────────────────────────────────────
-            dcc.Store(id="session-store", data=[]),
             dcc.Store(id="source-type", data="none"),
             dcc.Store(id="ll-entries-store", data=ll_entries_jsonable),
             dcc.Store(id="ll-stats-store", data=ll_stats_jsonable),
@@ -1001,11 +971,34 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                 children=[
                     html.Div(className="status-dot"),
                     html.Span(
-                        f"ASAP  ·  {dataset['suffix']}  ·  {dataset['n_stars']} stars",
+                        f"Wave Explorer  ·  ASAP  ·  {dataset['suffix']}  ·  "
+                        f"{dataset['n_stars']} stars  ·  "
+                        f"{len(dataset['ll_entries'])} regions",
                         style={"color": C["dim"]},
                     ),
                     html.Span("·"),
                     html.Span(id="status-range", style={"color": C["cyan"]}),
+                    html.Div(className="h-spacer"),
+                    html.Div(
+                        className="kbd-hints",
+                        children=[
+                            html.Span(
+                                [html.Span("D", className="kbd"), "draw"]
+                            ),
+                            html.Span(
+                                [html.Span("X", className="kbd"), "exclude"]
+                            ),
+                            html.Span(
+                                [html.Span("Z", className="kbd"), "undo"]
+                            ),
+                            html.Span(
+                                [html.Span("⌘S", className="kbd"), "save"]
+                            ),
+                            html.Span(
+                                [html.Span("Esc", className="kbd"), "deselect"]
+                            ),
+                        ],
+                    ),
                 ],
             ),
         ]
