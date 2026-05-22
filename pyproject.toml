@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wave_explorer"
+version = "1.0.0"
+description = "ASAP Line Curation Dashboard"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "dash>=2.0",
+    "flask-caching",
+    "numpy",
+]
+
+[project.scripts]
+wave-explorer = "wave_explorer.app:main"
+
+# The git repo root *is* the package directory (app.py, __init__.py, ... live
+# here directly), so map the `wave_explorer` package onto ".". Sub-packages
+# such as `wave_explorer.callbacks` are derived automatically (./callbacks).
+[tool.setuptools]
+packages = ["wave_explorer", "wave_explorer.callbacks"]
+package-dir = { "wave_explorer" = "." }
+include-package-data = true
+
+[tool.setuptools.package-data]
+wave_explorer = ["assets/*"]
