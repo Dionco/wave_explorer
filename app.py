@@ -6,11 +6,10 @@ import argparse
 from pathlib import Path
 
 from flask_caching import Cache
-from dash import Dash, Input, Output, State
+from dash import Dash, Input, Output
 
 from .callbacks import register_all_callbacks
 from .data_processing import build_dataset
-from .figure_builder import build_base_figure
 from .layout import build_layout
 
 
@@ -28,144 +27,37 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
     max_w = float(dataset["common_w"][-1])
     all_rows = dataset["region_summary"]
 
-    base_fig = build_base_figure(
-        dataset,
-        debug_hover=debug_hover,
-    )
-
     app = Dash(__name__, suppress_callback_exceptions=True)
     app.title = f"ASAP — {dataset['suffix']}"
 
     cache.init_app(app.server)
 
-    app.layout = build_layout(dataset, base_fig, debug_hover=debug_hover)
+    app.layout = build_layout(dataset, debug_hover=debug_hover)
 
-    # ── Clientside callback: sync ll-entries to drag_handles.js ──────────────
-    #
-    # Writes a cloned copy of ll-entries to window.__llEntriesData so that
-    # drag_handles.js can read it on init().  updateLLEntries() also clones
-    # internally, so the Dash store's data is never mutated in-place.
+    # ── Clientside: feed the SVG spectrum component ──────────────────────────
+    # One callback pushes static data + live region state into spectrum.js.
+    # If spectrum.js has not initialised yet, the args are cached on window
+    # and replayed by its init().
     app.clientside_callback(
         """
-        function(llEntries) {
-            var entries = llEntries || [];
-
-            // Cache a clone for drag_handles.js init() fallback.
-            window.__llEntriesData = entries.map(function(e) {
-                return Object.assign({}, e);
-            });
-
-            // If drag_handles.js is already loaded, push immediately.
-            if (window.updateLLEntries) {
-                window.updateLLEntries(entries);
-            }
-            return window.dash_clientside
-                ? window.dash_clientside.no_update
-                : null;
-        }
-        """,
-        Output("handles-sync-store", "data"),
-        Input("ll-entries-store", "data"),
-    )
-
-    # ── Clientside callback: discard reset ───────────────────────────────────
-    # When the user clicks Discard, the Python callback emits the saved
-    # ll-entries data via discard-signal-store. This JS callback:
-    #   1. Resets the __llEntriesData cache (cloned)
-    #   2. Calls resetShapesToEntries(), which resets only the JS-side
-    #      `llEntries` mirror — it intentionally does NOT call
-    #      Plotly.relayout(), because that would force a layoutReplot and
-    #      reset the user's zoom/pan. The visible shape positions are
-    #      snapped back by the Python update_figure_shapes callback
-    #      (a Patch of layout.shapes, which preserves axis state).
-    app.clientside_callback(
-        """
-        function(discardSignal) {
-            if (!discardSignal || !discardSignal.entries) {
-                return window.dash_clientside
-                    ? window.dash_clientside.no_update : null;
-            }
-            var entries = discardSignal.entries;
-
-            // Clone into the global cache so init() never gets a mutable ref.
-            window.__llEntriesData = entries.map(function(e) {
-                return Object.assign({}, e);
-            });
-
-            // Reset the JS-side mirror only. Shapes are re-patched by the
-            // Python update_figure_shapes callback on the ll-entries-store
-            // change, which preserves zoom/pan.
-            if (window.resetShapesToEntries) {
-                window.resetShapesToEntries(entries);
+        function(specData, llEntries, pending, selected, drawActive, goto) {
+            var args = [specData, llEntries, pending, selected, drawActive,
+                        goto];
+            window.__weSpectrumPending = args;
+            if (window.WaveExplorer && window.WaveExplorer.sync) {
+                window.WaveExplorer.sync.apply(null, args);
             }
             return window.dash_clientside
                 ? window.dash_clientside.no_update : null;
         }
         """,
-        Output("handles-sync-store", "data", allow_duplicate=True),
-        Input("discard-signal-store", "data"),
-        prevent_initial_call=True,
-    )
-
-    app.clientside_callback(
-        """
-        function(hoverData, llStatsStore) {
-            if (window.dash_clientside && window.dash_clientside.show_region_tooltip) {
-                return window.dash_clientside.show_region_tooltip(hoverData, llStatsStore);
-            }
-            return window.dash_clientside ? window.dash_clientside.no_update : null;
-        }
-        """,
-        Output("tooltip-sync-store", "data"),
-        Input("spectrum-graph", "hoverData"),
-        State("ll-stats-store", "data"),
-    )
-
-    app.clientside_callback(
-        """
-        function(hoverSync) {
-            if (window.updateHoveredRegion) {
-                window.updateHoveredRegion(hoverSync || {region_idx: null});
-            }
-            return window.dash_clientside ? window.dash_clientside.no_update : null;
-        }
-        """,
-        Output("handles-hover-sync-store", "data"),
-        Input("tooltip-sync-store", "data"),
-    )
-
-    # ── Clientside: capture plot click as selected region idx ─────────────
-    # Hover overlay traces carry each region's idx in customdata. A click
-    # on any overlay polygon lands in clickData.points[0].customdata, so
-    # we extract the idx and write it to selected-region-store. A click
-    # outside any overlay (empty points) clears the selection.
-    app.clientside_callback(
-        """
-        function(clickData) {
-            if (!clickData || !clickData.points || !clickData.points.length) {
-                return window.dash_clientside
-                    ? window.dash_clientside.no_update : null;
-            }
-            var pt = clickData.points[0];
-            if (pt.customdata === undefined || pt.customdata === null) {
-                return window.dash_clientside
-                    ? window.dash_clientside.no_update : null;
-            }
-            var raw = Array.isArray(pt.customdata)
-                ? pt.customdata[0] : pt.customdata;
-            var regionIdx = parseInt(raw, 10);
-            if (!Number.isFinite(regionIdx)) {
-                return window.dash_clientside
-                    ? window.dash_clientside.no_update : null;
-            }
-            // Overlay customdata carries the 1-based region_idx used by
-            // the tooltip. ll-entries-store is 0-based, so shift here.
-            return {region_idx: regionIdx - 1};
-        }
-        """,
-        Output("selected-region-store", "data"),
-        Input("spectrum-graph", "clickData"),
-        prevent_initial_call=True,
+        Output("handles-sync-store", "data"),
+        Input("spectrum-data-store", "data"),
+        Input("ll-entries-store", "data"),
+        Input("pending-changes-store", "data"),
+        Input("selected-region-store", "data"),
+        Input("draw-mode-active-store", "data"),
+        Input("goto-region-store", "data"),
     )
 
     register_all_callbacks(

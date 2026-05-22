@@ -8,7 +8,8 @@ from typing import List
 import numpy as np
 from dash import dcc, html
 
-from .theme import C, MONO, _fmt, chi2_color, chi2_label, chi2_pct
+from .data_processing import build_spectrum_payload
+from .theme import C, MONO, _fmt, chi2_color, chi2_label, chi2_pct, chi2_tier
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Brand mark — abstract spectral-peak SVG (warm editorial identity).
@@ -251,20 +252,30 @@ def _legend_swatch(color: str, label: str) -> html.Div:
     )
 
 
-def build_histogram(region_summary: List[dict]) -> html.Div:
-    """A compact χ²/N distribution histogram for the fitted regions.
-
-    Static — computed once from the region summary. Bars are coloured by
-    the quality ramp so the spread of fit quality is readable at a glance.
-    """
-    bin_w = 2.0
-    n_bins = 22
-    bins = [0] * n_bins
-    vals = [
+def region_chi2_values(region_summary: List[dict]) -> List[float]:
+    """Median χ²/N of every fitted region — the default histogram dataset."""
+    return [
         float(r["med_chi2"])
         for r in region_summary
         if r.get("med_chi2") is not None and np.isfinite(r["med_chi2"])
     ]
+
+
+def build_histogram(
+    values: List[float], subtitle: str, unit: str = "region"
+) -> html.Div:
+    """A compact χ²/N distribution histogram.
+
+    `values` is a list of χ²/N numbers — either the median χ²/N of every
+    fitted region (the default panel view) or the per-star χ²/N of a
+    single selected region. `subtitle` labels the dataset and `unit` names
+    what each count is ("region" or "star"). Bars are coloured by the
+    quality ramp so the spread of fit quality is readable at a glance.
+    """
+    bin_w = 2.0
+    n_bins = 22
+    bins = [0] * n_bins
+    vals = [float(v) for v in (values or []) if v is not None and np.isfinite(v)]
     for v in vals:
         b = min(n_bins - 1, max(0, int(v / bin_w)))
         bins[b] += 1
@@ -275,7 +286,7 @@ def build_histogram(region_summary: List[dict]) -> html.Div:
             className="hist-bar",
             title=(
                 f"χ²/N {i * bin_w:.0f}–{(i + 1) * bin_w:.0f}"
-                f"{'+' if i == n_bins - 1 else ''}  ·  {count} region"
+                f"{'+' if i == n_bins - 1 else ''}  ·  {count} {unit}"
                 f"{'' if count == 1 else 's'}"
             ),
             children=html.Div(
@@ -296,7 +307,7 @@ def build_histogram(region_summary: List[dict]) -> html.Div:
                 className="hist-head",
                 children=[
                     html.Span("χ²/N distribution", className="eyebrow"),
-                    html.Span(f"{len(vals)} fitted regions", className="subtitle"),
+                    html.Span(subtitle, className="subtitle"),
                 ],
             ),
             html.Div(className="hist-bars", children=bars),
@@ -404,12 +415,18 @@ def build_heatstrip(dataset: dict, min_w: float, max_w: float) -> html.Div:
 
 
 def build_stats_panel(region_summary: List[dict]) -> html.Div:
+    vals = region_chi2_values(region_summary)
     return html.Div(
         className="card",
         children=[
             html.Div("Live Statistics", className="card-title"),
             html.Div(id="candidate-stats"),
-            build_histogram(region_summary),
+            html.Div(
+                id="chi2-histogram",
+                children=build_histogram(
+                    vals, f"{len(vals)} fitted regions"
+                ),
+            ),
         ],
     )
 
@@ -646,6 +663,12 @@ def build_table_row(
                 f"{row['med_chi2']:.3f}",
                 style={"color": col, "fontWeight": "700"},
             ),
+            html.Td(
+                html.Span(
+                    chi2_label(row["med_chi2"]),
+                    className=f"q-badge q-{chi2_tier(row['med_chi2'])}",
+                )
+            ),
             html.Td(str(row["n_stars"])),
             html.Td(str(row["med_npix"])),
             html.Td(
@@ -680,6 +703,7 @@ def build_table_panel(
             html.Th("Center (nm)"),
             html.Th("Range (nm)"),
             html.Th("χ²/N med"),
+            html.Th("Quality"),
             html.Th("N★"),
             html.Th("N pix"),
             html.Th(""),
@@ -719,7 +743,7 @@ def build_table_panel(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div:
+def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
     all_rows = dataset["region_summary"]
     _common_w = dataset["common_w"]
     _min_w = float(_common_w[0])
@@ -818,34 +842,9 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
                                 className="spectrum-canvas-wrap",
                                 style={"position": "relative"},
                                 children=[
-                                    dcc.Graph(
-                                        id="spectrum-graph",
-                                        figure=base_fig,
-                                        clear_on_unhover=True,
-                                        config={
-                                            "scrollZoom": True,
-                                            "displaylogo": False,
-                                            "doubleClick": "reset+autosize",
-                                            "responsive": True,
-                                            "modeBarButtonsToRemove": [
-                                                "lasso2d",
-                                                "select2d",
-                                            ],
-                                            "editable": False,
-                                        },
-                                        style={"height": "820px"},
-                                    ),
                                     html.Div(
-                                        id="drag-handles-overlay",
-                                        style={
-                                            "position": "absolute",
-                                            "top": "0",
-                                            "left": "0",
-                                            "right": "0",
-                                            "bottom": "0",
-                                            "pointerEvents": "none",
-                                            "zIndex": "10",
-                                        },
+                                        id="spectrum-graph",
+                                        className="spectrum-canvas",
                                     ),
                                 ],
                             ),
@@ -886,6 +885,10 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
             ),
             # ── Hidden state stores ────────────────────────────────────────────
             dcc.Store(id="source-type", data="none"),
+            dcc.Store(
+                id="spectrum-data-store",
+                data=build_spectrum_payload(dataset),
+            ),
             dcc.Store(id="ll-entries-store", data=ll_entries_jsonable),
             dcc.Store(id="ll-stats-store", data=ll_stats_jsonable),
             dcc.Store(id="drag-result-store", data=None),
@@ -899,25 +902,13 @@ def build_layout(dataset: dict, base_fig, debug_hover: bool = False) -> html.Div
             dcc.Store(id="draw-mode-active-store", data=False),
             dcc.Store(id="last-saved-path-store", data=None),
             dcc.Store(id="selected-region-store", data=None),
+            dcc.Store(id="goto-region-store", data=None),
             dcc.Store(id="pending-history-store", data=[]),
-            # ── Cursor tooltip ─────────────────────────────────────────────────
+            # ── Cursor tooltip (filled by spectrum.js) ─────────────────────────
             html.Div(
                 id="cursor-tooltip",
-                style={
-                    "display": "none",
-                    "position": "fixed",
-                    "backgroundColor": C["surf2"],
-                    "border": f"1px solid {C['border']}",
-                    "borderRadius": "6px",
-                    "padding": "8px 12px",
-                    "fontSize": "11px",
-                    "fontFamily": MONO,
-                    "color": C["text"],
-                    "zIndex": "1000",
-                    "maxWidth": "280px",
-                    "boxShadow": "0 4px 12px rgba(0,0,0,0.4)",
-                    "pointerEvents": "none",
-                },
+                className="cursor-tooltip",
+                style={"display": "none"},
             ),
             # ── Draw-region confirmation popover ───────────────────────────────
             html.Div(

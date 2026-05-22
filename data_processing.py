@@ -3,10 +3,13 @@ ASAP Data Processing & Loading Layer
 """
 
 import configparser
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+from .theme import CHI2_THRESHOLDS, ELEMENT_COLORS, ELEMENT_COLOR_FALLBACK
 
 
 try:
@@ -426,7 +429,8 @@ def compute_custom_region_chi2(
     """Compute chi2 stats across all stars for a custom wavelength range."""
     if wvl_hi <= wvl_lo:
         return dict(
-            median_chi2=np.nan, p16_chi2=np.nan, p84_chi2=np.nan, n_stars=0, med_npix=0
+            median_chi2=np.nan, p16_chi2=np.nan, p84_chi2=np.nan, n_stars=0,
+            med_npix=0, per_star_chi2=[],
         )
     per_star, npix = [], []
     for fd in fit_data_cache.values():
@@ -436,7 +440,8 @@ def compute_custom_region_chi2(
             npix.append(n)
     if not per_star:
         return dict(
-            median_chi2=np.nan, p16_chi2=np.nan, p84_chi2=np.nan, n_stars=0, med_npix=0
+            median_chi2=np.nan, p16_chi2=np.nan, p84_chi2=np.nan, n_stars=0,
+            med_npix=0, per_star_chi2=[],
         )
     return dict(
         median_chi2=float(np.median(per_star)),
@@ -444,6 +449,7 @@ def compute_custom_region_chi2(
         p84_chi2=float(np.percentile(per_star, 84)),
         n_stars=len(per_star),
         med_npix=int(np.median(npix)),
+        per_star_chi2=[float(x) for x in per_star],
     )
 
 
@@ -638,3 +644,61 @@ def build_dataset(
         region_summary=region_summary,
         fit_data_cache=fit_data_cache,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Spectrum component payload
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def build_spectrum_payload(dataset: dict) -> dict:
+    """Build the JSON-serializable payload for the spectrum-data-store.
+
+    Carries the static data the client-side SVG renderer needs: the
+    obs/fit/resid arrays, the wavelength axis, and a per-region χ² + star
+    count list aligned to ll_entries by 0-based index.
+
+    χ² is keyed by region_summary's `region_idx` (region_summary may be a
+    subset of ll_entries — only regions with a fit). Star/pixel counts come
+    from ll_hover_stats, which is kept 1:1 with ll_entries by position.
+    Non-finite χ² becomes None so the payload is strict-JSON.
+    """
+    def _floats(seq):
+        return [float(v) for v in seq]
+
+    chi2_map = {}
+    for r in dataset.get("region_summary", []):
+        c2 = r.get("med_chi2")
+        try:
+            c2f = float(c2)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(c2f):
+            chi2_map[int(r["region_idx"])] = c2f
+
+    hover_stats = list(dataset.get("ll_hover_stats", []))
+    regions = []
+    for i, _entry in enumerate(dataset.get("ll_entries", [])):
+        hs = hover_stats[i] if i < len(hover_stats) else {}
+        regions.append(
+            {
+                "idx": i,
+                "chi2": chi2_map.get(i),
+                "n_stars": int(hs.get("n_stars", 0) or 0),
+                "n_pix": int(hs.get("med_npix", 0) or 0),
+            }
+        )
+
+    wavelengths = _floats(dataset["common_w"])
+    return {
+        "wavelengths": wavelengths,
+        "flux": _floats(dataset["mean_obs_s"]),
+        "fitFlux": _floats(dataset["mean_fit_s"]),
+        "resid": _floats(dataset["mean_resid_s"]),
+        "lambdaMin": wavelengths[0],
+        "lambdaMax": wavelengths[-1],
+        "regions": regions,
+        "chi2Thresholds": [float(t) for t in CHI2_THRESHOLDS],
+        "elementColors": dict(ELEMENT_COLORS),
+        "elementColorFallback": ELEMENT_COLOR_FALLBACK,
+    }

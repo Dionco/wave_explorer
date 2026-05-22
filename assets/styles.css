@@ -373,6 +373,18 @@ body {
   letter-spacing: 0.06em;
 }
 
+/* Quality tier chips — shared by the table column and the cursor tooltip. */
+.q-good { background: rgba(79,122,77,0.18);  color: var(--good); }
+.q-fair { background: rgba(184,136,41,0.18); color: var(--fair); }
+.q-poor { background: rgba(200,115,56,0.18); color: var(--poor); }
+.q-bad  { background: rgba(156,61,46,0.18);  color: var(--bad); }
+.q-miss { background: rgba(156,150,132,0.18); color: var(--muted); }
+.cursor-tooltip .q-good { color: #8fc08c; }
+.cursor-tooltip .q-fair { color: #e0b85a; }
+.cursor-tooltip .q-poor { color: #e0a35a; }
+.cursor-tooltip .q-bad  { color: #e08a78; }
+.cursor-tooltip .q-miss { color: var(--on-dark-soft); }
+
 /* ============================================================
    Stats panel
    ============================================================ */
@@ -719,3 +731,67 @@ html { scroll-behavior: smooth; }
 .table-wrap::-webkit-scrollbar-track { background: transparent; }
 .table-wrap::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 5px; border: 2px solid var(--paper); }
 .table-wrap::-webkit-scrollbar-thumb:hover { background: var(--muted-soft); }
+
+/* ============================================================
+   Spectrum SVG (custom renderer — replaces Plotly)
+   ============================================================ */
+.spectrum-canvas { position: relative; width: 100%; }
+.spectrum-svg {
+  display: block; width: 100%; height: auto;
+  cursor: grab; touch-action: none;
+  user-select: none; -webkit-user-select: none;
+}
+.spectrum-svg.panning { cursor: grabbing; }
+.spectrum-svg.drawing { cursor: crosshair; }
+
+.region-band { transition: opacity 120ms ease; }
+.region-band.dim { opacity: 0.4; }
+
+.region-edge { cursor: ew-resize; fill: rgba(0,0,0,0); }
+.drag-handle {
+  fill: var(--ink); stroke: var(--paper); stroke-width: 1.5;
+  cursor: ew-resize; transition: fill 80ms;
+}
+.drag-handle:hover { fill: var(--accent); }
+
+.spectrum-grid line { stroke: var(--hairline); stroke-width: 0.5; }
+body.theme-dark .spectrum-grid line { stroke: rgba(255,255,255,0.06); }
+.spectrum-axis-label { font-family: var(--font-mono); font-size: 10px; fill: var(--muted); }
+
+.flux-line, .obs-line, .fit-line, .resid-line { fill: none; }
+.obs-line { stroke: var(--ink-3); stroke-width: 1.1; opacity: 0.65; }
+.fit-line { stroke: var(--accent); stroke-width: 1.6; }
+.resid-line { stroke: var(--ink-3); stroke-width: 1; opacity: 0.85; }
+body.theme-dark .obs-line { stroke: #b8b09a; opacity: 0.75; }
+body.theme-dark .resid-line { stroke: #b8b09a; opacity: 0.85; }
+.continuum-line {
+  stroke: var(--muted-soft); stroke-width: 0.8;
+  stroke-dasharray: 3 3; fill: none; opacity: 0.5;
+}
+.element-label {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  text-anchor: middle; pointer-events: none;
+}
+
+/* Dark cursor tooltip */
+.cursor-tooltip {
+  position: fixed; pointer-events: none; z-index: 1000;
+  background: var(--dark); color: var(--on-dark);
+  border-radius: var(--r-md); padding: 10px 12px;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  min-width: 200px; max-width: 280px;
+}
+.cursor-tooltip .tt-title {
+  font-family: var(--font-sans); font-weight: 600; font-size: 12px;
+  color: var(--on-dark); margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.cursor-tooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; }
+.cursor-tooltip .tt-row > span:first-child { color: var(--on-dark-soft); }
+.cursor-tooltip .tt-row > span:last-child {
+  color: var(--on-dark); font-variant-numeric: tabular-nums;
+}
+.cursor-tooltip .tt-sep {
+  height: 1px; background: rgba(255,255,255,0.08); margin: 6px -12px;
+}
