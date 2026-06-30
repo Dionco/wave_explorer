@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[1]          # wave_explorer/
 SITE = REPO / "site"
 PAYLOAD = SITE / "payload"
 FIXTURES = REPO / "tests" / "fixtures"
-STAR_SLUGS = ["ds_leo", "gl_581", "gj_1289"]
+STAR_SLUGS = ["ds_leo", "gl_699", "gj_1289"]
 
 
 def _strict(o):
