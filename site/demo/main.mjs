@@ -2,6 +2,7 @@
 // Static controller: replaces the Dash server for the wave_explorer demo.
 
 import { customRegionChi2, residualMetrics } from "./compute.mjs";
+import { chi2Color } from "./theme.mjs";
 
 // 1) Dash shim — installed synchronously so any spectrum.js event is captured.
 const handlers = {};               // storeId -> fn(data); filled in later tasks
@@ -81,6 +82,65 @@ handlers["selected-region-store"] = (data) => {
   syncSpectrum();                   // re-highlight in the plot
   renderSelectedStats();
 };
+
+function refreshHeatstrip() {
+  const m = state.manifest;
+  const span = Math.max(1e-6, m.lambdaMax - m.lambdaMin);
+  const chi2Map = new Map(state.meta.region_summary.map((r) => [r.region_idx, r.med_chi2]));
+  document.getElementById("heatstrip-regions").innerHTML = state.llEntries.map((e, idx) => {
+    const eff = (state.pending[String(idx)] && typeof state.pending[String(idx)] === "object")
+      ? state.pending[String(idx)] : e;
+    const left = ((eff.lower - m.lambdaMin) / span) * 100;
+    const width = Math.max(0.18, ((eff.upper - eff.lower) / span) * 100);
+    const c2 = chi2Map.get(idx);
+    const bg = c2 != null ? chi2Color(c2) : "#9c9684";
+    return `<div class="heatstrip-region${eff.excluded ? " excluded" : ""}" style="left:${left.toFixed(4)}%;width:${width.toFixed(4)}%;background:${bg}"></div>`;
+  }).join("");
+}
+
+handlers["drag-result-store"] = (data) => {
+  if (!data) return;
+  const { region_idx, bound, new_x_nm } = data;          // bound: "lower" | "upper"
+  const base = state.llEntries[region_idx];
+  if (!base) return;
+  const edited = { ...(state.pending[String(region_idx)] || base) };
+  edited[bound] = Number(new_x_nm);
+  if (edited.lower > edited.upper) { const t = edited.lower; edited.lower = edited.upper; edited.upper = t; }
+  state.pending[String(region_idx)] = edited;
+  syncSpectrum();                 // redraw shapes with the pending geometry
+  if (state.selected && state.selected.region_idx === region_idx) renderSelectedStats();
+  refreshHeatstrip();
+};
+
+handlers["draw-region-store"] = (data) => {
+  if (!data) return;              // {lo, hi}
+  state.selected = { region_idx: null, custom: [Number(data.lo), Number(data.hi)] };
+  renderCustomStats(Number(data.lo), Number(data.hi));
+};
+
+async function renderCustomStats(lo, hi) {
+  const { renderStats, buildHistogram } = await import("./render.mjs");
+  const c = customRegionChi2(state.meta.fitpix, lo, hi);
+  const rs = residualMetrics(state.meta.common_w, state.meta.mean_resid, state.meta.std_resid, lo, hi);
+  const statsEl = document.getElementById("candidate-stats");
+  const rangeEl = document.getElementById("status-range");
+  if (!Number.isFinite(c.median_chi2)) {
+    statsEl.innerHTML = `<div style="color:#9c9684;font-size:13px">No fitted pixels in the drawn interval.</div>`;
+    rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm · no fitted pixels`;
+    return;
+  }
+  statsEl.innerHTML = renderStats(c, rs, lo, hi);
+  document.getElementById("chi2-histogram").innerHTML =
+    buildHistogram(c.per_star_chi2, `Drawn region · ${c.n_stars} stars`, "star");
+  rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm · χ²/N = ${c.median_chi2.toFixed(3)} (drawn)`;
+}
+
+// draw-mode toggle button
+document.getElementById("draw-mode-toggle").addEventListener("click", () => {
+  state.drawActive = !state.drawActive;
+  window.activateDrawMode(state.drawActive);
+  document.getElementById("draw-mode-toggle").classList.toggle("btn-primary", state.drawActive);
+});
 
 // table navigation wiring (passed into renderAll)
 function wire() {
