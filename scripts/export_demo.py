@@ -27,8 +27,8 @@ STAR_SLUGS = ["ds_leo", "gl_581", "gj_1289"]
 
 def _strict(o):
     """Recursively replace non-finite floats with None for strict-JSON serialisation."""
-    if isinstance(o, float):
-        return o if math.isfinite(o) else None
+    if isinstance(o, (float, np.floating)):
+        return o if math.isfinite(float(o)) else None
     if isinstance(o, dict):
         return {k: _strict(v) for k, v in o.items()}
     if isinstance(o, (list, tuple)):

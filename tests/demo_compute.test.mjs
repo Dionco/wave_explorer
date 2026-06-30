@@ -8,10 +8,12 @@ import {
 
 const meta = JSON.parse(readFileSync(new URL("../site/payload/meta.json", import.meta.url)));
 const exp = JSON.parse(readFileSync(new URL("./fixtures/compute_expected.json", import.meta.url)));
-const close = (a, b, eps = 1e-6) =>
-  (a == null && b == null) ||
-  (Number.isNaN(a) && b == null) ||
-  Math.abs(a - b) <= eps * (1 + Math.abs(b));
+const close = (a, b, eps = 1e-6) => {
+  const aMissing = a == null || Number.isNaN(a);
+  const bMissing = b == null || Number.isNaN(b);
+  if (aMissing || bMissing) return aMissing && bMissing;
+  return Math.abs(a - b) <= eps * (1 + Math.abs(b));
+};
 
 test("customRegionChi2 matches Python for every region window", () => {
   for (const w of exp.windows) {
