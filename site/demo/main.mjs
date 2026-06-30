@@ -52,8 +52,8 @@ async function boot() {
 
   syncSpectrum();                  // render the mean spectrum
   // Task 6 fills header/heatstrip/histogram/table; Task 7+ wire handlers.
-  // const { renderAll } = await import("./render.mjs");  // Task 6 — render.mjs not yet created
-  // renderAll(state, { handlers, syncSpectrum });         // Task 6 — restore when render.mjs exists
+  const { renderAll } = await import("./render.mjs");
+  renderAll(state, { handlers, syncSpectrum, wire: null });
 }
 
 boot().catch((err) => {
