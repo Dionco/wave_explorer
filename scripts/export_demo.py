@@ -91,11 +91,13 @@ def _floats(seq, ndigits=None):
     return [round(float(v), ndigits) for v in seq]
 
 
-def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: str):
+def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: str,
+           only_slugs=None):
     PAYLOAD.mkdir(parents=True, exist_ok=True)
     dataset = build_dataset(
         retrievals_dir=retrievals_dir, suffix=suffix, line_list_path=line_list,
         grid_step_nm=0.01, smooth_window=1, vald_path=vald_path,
+        only_slugs=only_slugs,
     )
     # 1) mean spectrum payload (verbatim from the app)
     (PAYLOAD / "mean.json").write_text(json.dumps(_strict(build_spectrum_payload(dataset))))
@@ -193,10 +195,19 @@ def main():
     p.add_argument("--vald-list", default=None)
     p.add_argument("--built-at", default="unknown", help="build timestamp string (passed in)")
     p.add_argument("--grid-path", default=None, help="model grid for model-full.fits pre-warm (Task 2)")
+    p.add_argument(
+        "--only-stars", default=None,
+        help="comma-separated star slugs to restrict the whole demo to "
+        "(mean view + per-star stats + full-range views); default = all stars in the campaign",
+    )
     args = _resolve_defaults(p.parse_args())
+    only_slugs = (
+        [s.strip() for s in args.only_stars.split(",") if s.strip()]
+        if args.only_stars else None
+    )
     ds, manifest = export(
         Path(args.retrievals_dir).resolve(), args.suffix, args.line_list,
-        args.vald_list, args.built_at,
+        args.vald_list, args.built_at, only_slugs=only_slugs,
     )
     print(f"mean.json + meta.json + manifest.json written for {ds['n_stars']} stars")
     export_star_payloads(ds, manifest, args.grid_path)
