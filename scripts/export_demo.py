@@ -64,7 +64,11 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
         "mean_resid": _floats(dataset["mean_resid"], 6),
         "std_resid": _floats(dataset["std_resid"], 6),
         "ll_entries": [
-            {k: e[k] for k in ("center", "lower", "upper", "element", "ion", "excluded")}
+            {
+                "center": float(e["center"]), "lower": float(e["lower"]),
+                "upper": float(e["upper"]), "element": str(e["element"]),
+                "ion": str(e["ion"]), "excluded": bool(e.get("excluded", False)),
+            }
             for e in dataset["ll_entries"]
         ],
         "region_summary": [
