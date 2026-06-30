@@ -1,6 +1,7 @@
 """Export the static-demo payloads for wave_explorer (run in the asap env)."""
 import argparse
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -13,12 +14,47 @@ from wave_explorer.data_processing import (
     load_full_model,
     build_single_star_payload,
     build_single_star_vald_payload,
+    compute_custom_region_chi2,
+    compute_residual_metrics,
 )
 
 REPO = Path(__file__).resolve().parents[1]          # wave_explorer/
 SITE = REPO / "site"
 PAYLOAD = SITE / "payload"
+FIXTURES = REPO / "tests" / "fixtures"
 STAR_SLUGS = ["ds_leo", "gl_581", "gj_1289"]
+
+
+def _strict(o):
+    """Recursively replace non-finite floats with None for strict-JSON serialisation."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _strict(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_strict(v) for v in o]
+    return o
+
+
+def _jsonable(v):
+    return None if (v is None or (isinstance(v, float) and not np.isfinite(v))) else v
+
+
+def emit_compute_fixture(dataset):
+    FIXTURES.mkdir(parents=True, exist_ok=True)
+    windows = []
+    for r in dataset["region_summary"]:
+        lo, hi = float(r["lower"]), float(r["upper"])
+        c = compute_custom_region_chi2(dataset["fit_data_cache"], lo, hi)
+        rs = compute_residual_metrics(dataset, lo, hi)
+        windows.append({
+            "lo": lo, "hi": hi,
+            "chi2": {k: _jsonable(c[k]) for k in
+                     ("median_chi2", "p16_chi2", "p84_chi2", "n_stars", "med_npix")},
+            "resid": {k: _jsonable(rs[k]) for k in
+                      ("n_grid", "mean_resid", "mean_abs_resid", "p95_abs_resid", "mean_norm_resid")},
+        })
+    (FIXTURES / "compute_expected.json").write_text(json.dumps({"windows": windows}))
 
 
 def extract_fitpix(fit_data: dict) -> dict:
@@ -62,7 +98,7 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
         grid_step_nm=0.01, smooth_window=1, vald_path=vald_path,
     )
     # 1) mean spectrum payload (verbatim from the app)
-    (PAYLOAD / "mean.json").write_text(json.dumps(build_spectrum_payload(dataset)))
+    (PAYLOAD / "mean.json").write_text(json.dumps(_strict(build_spectrum_payload(dataset))))
     # 2) meta: geometry + region table + residual arrays + per-star fitted pixels + vald
     meta = {
         "common_w": _floats(dataset["common_w"]),
@@ -89,7 +125,7 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
         "fitpix": {slug: extract_fitpix(fd) for slug, fd in dataset["fit_data_cache"].items()},
         "vald": dataset.get("vald_payload"),
     }
-    (PAYLOAD / "meta.json").write_text(json.dumps(meta))
+    (PAYLOAD / "meta.json").write_text(json.dumps(_strict(meta)))
     # 3) manifest (star views filled in by Task 2)
     w = dataset["common_w"]
     manifest = {
@@ -99,7 +135,7 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
         "nRegions": len(dataset["ll_entries"]), "builtAt": built_at,
         "views": [{"id": "__mean__", "label": "All stars (mean)", "file": "mean.json"}],
     }
-    (PAYLOAD / "manifest.json").write_text(json.dumps(manifest))
+    (PAYLOAD / "manifest.json").write_text(json.dumps(_strict(manifest)))
     return dataset, manifest
 
 
@@ -124,9 +160,9 @@ def export_star_payloads(dataset, manifest, grid_path):
         fd = load_full_model(folder)
         payload = build_single_star_payload(fd, dataset)
         payload["vald"] = build_single_star_vald_payload(payload, dataset["vald_entries"])
-        (PAYLOAD / f"star_{slug}.json").write_text(json.dumps(payload))
+        (PAYLOAD / f"star_{slug}.json").write_text(json.dumps(_strict(payload)))
         manifest["views"].append({"id": slug, "label": slug, "file": f"star_{slug}.json"})
-    (PAYLOAD / "manifest.json").write_text(json.dumps(manifest))
+    (PAYLOAD / "manifest.json").write_text(json.dumps(_strict(manifest)))
 
 
 def _resolve_defaults(args):
@@ -156,6 +192,8 @@ def main():
     print(f"mean.json + meta.json + manifest.json written for {ds['n_stars']} stars")
     export_star_payloads(ds, manifest, args.grid_path)
     print("star payloads:", [v["id"] for v in manifest["views"] if v["id"] != "__mean__"])
+    emit_compute_fixture(ds)
+    print(f"compute_expected.json written to {FIXTURES}")
 
 
 if __name__ == "__main__":
