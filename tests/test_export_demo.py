@@ -1,6 +1,7 @@
 """Unit test for export_demo.extract_fitpix — no FITS, no env needed."""
+import json
 import numpy as np
-from wave_explorer.scripts.export_demo import extract_fitpix
+from wave_explorer.scripts.export_demo import REPO, STAR_SLUGS, extract_fitpix
 from wave_explorer.data_processing import compute_region_chi2_for_star
 
 
@@ -30,3 +31,17 @@ def test_extract_fitpix_matches_python_chi2():
     ref_chi2, ref_n = compute_region_chi2_for_star(fd, lo, hi)
     assert ref_n == len(fp["w"]) == 2
     assert abs(js_like - ref_chi2) < 1e-9
+
+
+def test_star_payload_schema_if_present():
+    """If star payloads have been exported, they must carry full-range spectra."""
+    for slug in STAR_SLUGS:
+        f = REPO / "site" / "payload" / f"star_{slug}.json"
+        if not f.exists():
+            continue  # integration-only; skipped until export has run
+        p = json.loads(f.read_text())
+        for key in ("wavelengths", "flux", "fitFlux", "resid", "lambdaMin",
+                    "lambdaMax", "regions", "fullRange", "vald"):
+            assert key in p, f"{slug} payload missing {key}"
+        assert p["fullRange"] is True
+        assert len(p["wavelengths"]) == len(p["flux"]) == len(p["fitFlux"])

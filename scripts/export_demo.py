@@ -1,6 +1,8 @@
 """Export the static-demo payloads for wave_explorer (run in the asap env)."""
 import argparse
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +10,9 @@ import numpy as np
 from wave_explorer.data_processing import (
     build_dataset,
     build_spectrum_payload,
+    load_full_model,
+    build_single_star_payload,
+    build_single_star_vald_payload,
 )
 
 REPO = Path(__file__).resolve().parents[1]          # wave_explorer/
@@ -98,6 +103,32 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
     return dataset, manifest
 
 
+def _ensure_model_full(folder: Path, grid_path):
+    if (folder / "model-full.fits").exists():
+        return
+    cmd = [sys.executable, "-m", "wave_explorer.full_model", str(folder)]
+    if grid_path:
+        cmd += ["--grid-path", str(grid_path)]
+    print("  computing model-full.fits:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+
+def export_star_payloads(dataset, manifest, grid_path):
+    folders = dataset["output_folders"]
+    for slug in STAR_SLUGS:
+        if slug not in folders:
+            print(f"  WARNING: {slug} not in dataset; skipping full-range view")
+            continue
+        folder = Path(folders[slug])
+        _ensure_model_full(folder, grid_path)
+        fd = load_full_model(folder)
+        payload = build_single_star_payload(fd, dataset)
+        payload["vald"] = build_single_star_vald_payload(payload, dataset["vald_entries"])
+        (PAYLOAD / f"star_{slug}.json").write_text(json.dumps(payload))
+        manifest["views"].append({"id": slug, "label": slug, "file": f"star_{slug}.json"})
+    (PAYLOAD / "manifest.json").write_text(json.dumps(manifest))
+
+
 def _resolve_defaults(args):
     cwd = Path.cwd()
     if args.retrievals_dir is None:
@@ -123,7 +154,8 @@ def main():
         args.vald_list, args.built_at,
     )
     print(f"mean.json + meta.json + manifest.json written for {ds['n_stars']} stars")
-    # Task 2 appends star payloads here.
+    export_star_payloads(ds, manifest, args.grid_path)
+    print("star payloads:", [v["id"] for v in manifest["views"] if v["id"] != "__mean__"])
 
 
 if __name__ == "__main__":
