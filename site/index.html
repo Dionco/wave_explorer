@@ -5,10 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wave Explorer — interactive demo</title>
   <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="assets/demo.css" />
 </head>
 <body>
   <!-- Explainer banner (Task 10 fills copy/links) -->
-  <div id="demo-banner" class="demo-banner"></div>
+  <div id="demo-banner" class="demo-banner">
+    <h1>Wave Explorer</h1>
+    <p>An interactive line-curation dashboard for ASAP magnetic-field retrievals.
+       This is a live demo running entirely in your browser on <strong>preloaded
+       <code>ds_leo</code>-campaign data</strong> — see the thesis for the science and methodology.</p>
+    <p class="demo-hints"><strong>Try:</strong> scroll to zoom · drag to pan · click a region for its χ²/N statistics ·
+       drag a region edge or use "Draw Region" to test curation · switch stars for the full-range model.
+       <em>Edits are local to your browser and are not saved.</em></p>
+    <p><a href="THESIS_URL_OR_DOI" target="_blank" rel="noopener">← Back to the thesis</a><!-- TODO: replace THESIS_URL_OR_DOI with the final thesis URL/DOI --></p>
+  </div>
 
   <div class="asap-header">
     <div class="asap-wordmark">

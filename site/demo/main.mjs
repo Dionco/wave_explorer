@@ -197,6 +197,8 @@ document.getElementById("vald-depth-min-slider").addEventListener("input", (ev) 
   syncSpectrum();
 });
 
+document.getElementById("demo-note").textContent = "demo · edits local to your browser";
+
 async function boot() {
   state.manifest = await getJSON("manifest.json");
   state.meta = await getJSON("meta.json");
