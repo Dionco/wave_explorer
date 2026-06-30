@@ -102,8 +102,10 @@ def export(retrievals_dir: Path, suffix: str, line_list, vald_path, built_at: st
     # 2) meta: geometry + region table + residual arrays + per-star fitted pixels + vald
     meta = {
         "common_w": _floats(dataset["common_w"]),
-        "mean_resid": _floats(dataset["mean_resid"], 6),
-        "std_resid": _floats(dataset["std_resid"], 6),
+        # Full precision (no rounding): mean_norm_resid = |resid|/sigma amplifies
+        # any rounding well past the JS<->Python parity tolerance.
+        "mean_resid": _floats(dataset["mean_resid"]),
+        "std_resid": _floats(dataset["std_resid"]),
         "ll_entries": [
             {
                 "center": float(e["center"]), "lower": float(e["lower"]),
@@ -156,12 +158,19 @@ def export_star_payloads(dataset, manifest, grid_path):
             print(f"  WARNING: {slug} not in dataset; skipping full-range view")
             continue
         folder = Path(folders[slug])
-        _ensure_model_full(folder, grid_path)
-        fd = load_full_model(folder)
-        payload = build_single_star_payload(fd, dataset)
-        payload["vald"] = build_single_star_vald_payload(payload, dataset["vald_entries"])
-        (PAYLOAD / f"star_{slug}.json").write_text(json.dumps(_strict(payload)))
-        manifest["views"].append({"id": slug, "label": slug, "file": f"star_{slug}.json"})
+        try:
+            _ensure_model_full(folder, grid_path)
+            fd = load_full_model(folder)
+            payload = build_single_star_payload(fd, dataset)
+            payload["vald"] = build_single_star_vald_payload(payload, dataset["vald_entries"])
+            (PAYLOAD / f"star_{slug}.json").write_text(json.dumps(_strict(payload)))
+            manifest["views"].append({"id": slug, "label": slug, "file": f"star_{slug}.json"})
+            print(f"  star payload written: {slug}")
+        except Exception as exc:
+            print(
+                f"  WARNING: full-range view for {slug} failed "
+                f"({type(exc).__name__}: {exc}); skipping this star's view"
+            )
     (PAYLOAD / "manifest.json").write_text(json.dumps(_strict(manifest)))
 
 

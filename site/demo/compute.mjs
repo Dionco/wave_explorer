@@ -60,9 +60,14 @@ function nanpercentile(arr, q) {
 }
 
 export function residualMetrics(commonW, meanResid, stdResid, lo, hi) {
+  // common_w is a float32 grid. The reference tool (numpy <2, value-based casting)
+  // compares it against the float32-downcast window bounds, so a grid point that is
+  // float32-equal to a bound is included even when it is float64-outside it. Replicate
+  // that with Math.fround on the bounds so window-edge grid points match exactly.
+  const loF = Math.fround(lo), hiF = Math.fround(hi);
   const rv = [], sv = [];
   for (let i = 0; i < commonW.length; i++) {
-    if (commonW[i] >= lo && commonW[i] <= hi) { rv.push(meanResid[i]); sv.push(stdResid[i]); }
+    if (commonW[i] >= loF && commonW[i] <= hiF) { rv.push(meanResid[i]); sv.push(stdResid[i]); }
   }
   // keep grid points where mean_resid is finite (matches Python's `ok` mask)
   const r = [], s = [];
