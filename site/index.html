@@ -15,9 +15,8 @@
        This is a live demo running entirely in your browser on <strong>preloaded
        <code>ds_leo</code>-campaign data</strong> — see the thesis for the science and methodology.</p>
     <p class="demo-hints"><strong>Try:</strong> scroll to zoom · drag to pan · click a region for its χ²/N statistics ·
-       drag a region edge or use "Draw Region" to test curation · switch stars for the full-range model.
+       drag a region edge, use "Draw Region" to add one, or "Delete region" to remove the selected one · switch stars for the full-range model.
        <em>Edits are local to your browser and are not saved.</em></p>
-    <p><a href="THESIS_URL_OR_DOI" target="_blank" rel="noopener">← Back to the thesis</a><!-- TODO: replace THESIS_URL_OR_DOI with the final thesis URL/DOI --></p>
   </div>
 
   <div class="asap-header">
@@ -30,6 +29,7 @@
     <button id="draw-mode-toggle" class="btn btn-sm" type="button">✎ Draw Region</button>
     <div id="selected-region-container" class="selected-region-container" style="display:none">
       <span class="h-chip c-cyan">◉ <span id="selected-region-label" class="hc-val"></span></span>
+      <button id="selected-delete-btn" class="btn btn-sm btn-danger" type="button" style="display:none">🗑 Delete region</button>
       <button id="selected-clear-btn" class="btn btn-sm" type="button">Deselect</button>
     </div>
     <div id="demo-note" class="h-chip"></div>

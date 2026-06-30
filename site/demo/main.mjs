@@ -16,6 +16,10 @@ window.dash_clientside.set_props = (id, props) => {
 const state = {
   manifest: null, meta: null, mean: null,
   llEntries: [], pending: {}, selected: null,
+  // Canonical per-region metadata {idx, chi2, n_stars, n_pix}, kept 1:1 with
+  // llEntries by index. Injected into the spec on every sync so spectrum.js
+  // colours/tooltips stay aligned after add/delete edits.
+  regions: [],
   drawActive: false, valdVisible: false, valdDepthMin: 0.10,
   view: "__mean__", specByView: {},   // cache loaded spectrum payloads
   gotoTick: 0,
@@ -71,9 +75,15 @@ async function renderSelectedStats() {
 
 function showSelectedChip(idx) {
   const cont = document.getElementById("selected-region-container");
-  if (idx == null) { cont.style.display = "none"; return; }
+  const delBtn = document.getElementById("selected-delete-btn");
+  if (idx == null) {
+    cont.style.display = "none";
+    if (delBtn) delBtn.style.display = "none";
+    return;
+  }
   cont.style.display = "";
   document.getElementById("selected-region-label").textContent = `Region #${idx + 1}`;
+  if (delBtn) delBtn.style.display = "";   // a real region is selected → allow delete
 }
 
 // register the store handler (fires when spectrum.js / keyboard.js click a region)
@@ -87,16 +97,35 @@ handlers["selected-region-store"] = (data) => {
 function refreshHeatstrip() {
   const m = state.manifest;
   const span = Math.max(1e-6, m.lambdaMax - m.lambdaMin);
-  const chi2Map = new Map(state.meta.region_summary.map((r) => [r.region_idx, r.med_chi2]));
   document.getElementById("heatstrip-regions").innerHTML = state.llEntries.map((e, idx) => {
     const eff = (state.pending[String(idx)] && typeof state.pending[String(idx)] === "object")
       ? state.pending[String(idx)] : e;
     const left = ((eff.lower - m.lambdaMin) / span) * 100;
     const width = Math.max(0.18, ((eff.upper - eff.lower) / span) * 100);
-    const c2 = chi2Map.get(idx);
-    const bg = c2 != null ? chi2Color(c2) : "#9c9684";
+    const r = state.regions[idx];
+    const c2 = r ? r.chi2 : null;
+    const bg = (c2 != null) ? chi2Color(c2) : "#9c9684";
     return `<div class="heatstrip-region${eff.excluded ? " excluded" : ""}" style="left:${left.toFixed(4)}%;width:${width.toFixed(4)}%;background:${bg}"></div>`;
   }).join("");
+}
+
+// Rebuild the worst-regions table from the live llEntries + canonical regions
+// (so add/delete are reflected). Mirrors the initial region_summary table:
+// fitted regions only, sorted by χ²/N desc, top 50.
+async function rebuildTable() {
+  const { renderTableRows } = await import("./render.mjs");
+  const rows = [];
+  state.llEntries.forEach((e, i) => {
+    const r = state.regions[i];
+    const c2 = r ? r.chi2 : null;
+    if (c2 == null || !Number.isFinite(c2)) return;
+    rows.push({
+      region_idx: i, center: Number(e.center), lower: Number(e.lower), upper: Number(e.upper),
+      element: e.element, med_chi2: c2, n_stars: r.n_stars || 0, med_npix: r.n_pix || 0,
+    });
+  });
+  rows.sort((a, b) => b.med_chi2 - a.med_chi2);
+  document.getElementById("table-body").innerHTML = renderTableRows(rows, state.llEntries);
 }
 
 handlers["drag-result-store"] = (data) => {
@@ -113,29 +142,31 @@ handlers["drag-result-store"] = (data) => {
   refreshHeatstrip();
 };
 
+// ADD: a drawn region becomes a real, visible region (new span on the spectrum
+// + heatstrip block + table row), then is selected so its stats show.
 handlers["draw-region-store"] = (data) => {
   if (!data) return;              // {lo, hi}
-  state.selected = { region_idx: null, custom: [Number(data.lo), Number(data.hi)] };
-  renderCustomStats(Number(data.lo), Number(data.hi));
-};
-
-async function renderCustomStats(lo, hi) {
-  const { renderStats, buildHistogram } = await import("./render.mjs");
+  let lo = Number(data.lo), hi = Number(data.hi);
+  if (hi < lo) { const t = lo; lo = hi; hi = t; }
   const c = customRegionChi2(state.meta.fitpix, lo, hi);
-  const rs = residualMetrics(state.meta.common_w, state.meta.mean_resid, state.meta.std_resid, lo, hi);
-  const statsEl = document.getElementById("candidate-stats");
-  const rangeEl = document.getElementById("status-range");
-  if (!Number.isFinite(c.median_chi2)) {
-    document.getElementById("chi2-histogram").innerHTML = "";
-    statsEl.innerHTML = `<div style="color:#9c9684;font-size:13px">No fitted pixels in the drawn interval.</div>`;
-    rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm · no fitted pixels`;
-    return;
-  }
-  statsEl.innerHTML = renderStats(c, rs, lo, hi);
-  document.getElementById("chi2-histogram").innerHTML =
-    buildHistogram(c.per_star_chi2, `Drawn region · ${c.n_stars} stars`, "star");
-  rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm · χ²/N = ${c.median_chi2.toFixed(3)} (drawn)`;
-}
+  state.llEntries.push({
+    center: (lo + hi) / 2, lower: lo, upper: hi,
+    element: "new", ion: "1", excluded: false, added: true,
+  });
+  state.regions.push({
+    idx: state.regions.length,
+    chi2: Number.isFinite(c.median_chi2) ? c.median_chi2 : null,
+    n_stars: c.n_stars, n_pix: c.med_npix,
+  });
+  const newIdx = state.llEntries.length - 1;
+  state.selected = { region_idx: newIdx };
+  state.gotoTick += 1;
+  showSelectedChip(newIdx);
+  refreshHeatstrip();
+  rebuildTable();
+  syncSpectrum({ region_idx: newIdx, tick: state.gotoTick });   // frame the new region
+  renderSelectedStats();
+};
 
 // draw-mode toggle button
 document.getElementById("draw-mode-toggle").addEventListener("click", () => {
@@ -159,7 +190,24 @@ function wire() {
   });
   document.getElementById("selected-clear-btn").addEventListener("click", () => {
     state.selected = null;
-    document.getElementById("selected-region-container").style.display = "none";
+    showSelectedChip(null);
+    syncSpectrum();
+    renderSelectedStats();
+  });
+  // DELETE: remove the selected region (span disappears); splice llEntries +
+  // regions together so the remaining indices stay aligned.
+  const delBtn = document.getElementById("selected-delete-btn");
+  if (delBtn) delBtn.addEventListener("click", () => {
+    const idx = state.selected && state.selected.region_idx;
+    if (idx == null || idx < 0 || idx >= state.llEntries.length) return;
+    state.llEntries.splice(idx, 1);
+    state.regions.splice(idx, 1);
+    state.regions.forEach((r, i) => { r.idx = i; });   // keep idx labels contiguous
+    state.pending = {};                                 // index-keyed; drop transient drags
+    state.selected = null;
+    showSelectedChip(null);
+    refreshHeatstrip();
+    rebuildTable();
     syncSpectrum();
     renderSelectedStats();
   });
@@ -167,7 +215,10 @@ function wire() {
 
 // Push the full state into spectrum.js. Single source of truth for the plot.
 export function syncSpectrum(goto = null) {
-  const spec = state.specByView[state.view];
+  const base = state.specByView[state.view];
+  // Region metadata is view-independent (line-list windows); inject the canonical
+  // array so colours/tooltips track add/delete edits regardless of which view is shown.
+  const spec = (base && state.regions.length) ? { ...base, regions: state.regions } : base;
   window.WaveExplorer.sync(
     spec, state.llEntries, state.pending, state.selected,
     state.drawActive, goto, currentVald(), state.valdVisible, state.valdDepthMin,
@@ -207,6 +258,9 @@ async function boot() {
   state.mean = await getJSON("mean.json");
   state.specByView["__mean__"] = state.mean;
   state.llEntries = state.meta.ll_entries.map((e) => ({ ...e }));
+  // Canonical region metadata, 1:1 with llEntries (set before the first sync so
+  // the initial spectrum is coloured correctly).
+  state.regions = (state.mean.regions || []).map((r) => ({ ...r }));
 
   // heatstrip needs λ-bounds on its wrapper before heatstrip.js reads them
   const hs = document.getElementById("heatstrip");
