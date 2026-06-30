@@ -172,6 +172,31 @@ export function syncSpectrum(goto = null) {
   );
 }
 
+async function loadView(viewId) {
+  if (!state.specByView[viewId]) {
+    const v = state.manifest.views.find((x) => x.id === viewId);
+    if (!v) return;
+    state.specByView[viewId] = await getJSON(v.file);
+  }
+  state.view = viewId;
+  syncSpectrum();      // spectrum.js resets to full λ-range when payload has fullRange:true
+}
+
+document.getElementById("star-select").addEventListener("change", (ev) => {
+  loadView(ev.target.value);
+});
+
+document.getElementById("vald-toggle-btn").addEventListener("click", () => {
+  state.valdVisible = !state.valdVisible;
+  document.getElementById("vald-toggle-btn").classList.toggle("btn-primary", state.valdVisible);
+  syncSpectrum();
+});
+
+document.getElementById("vald-depth-min-slider").addEventListener("input", (ev) => {
+  state.valdDepthMin = Number(ev.target.value);
+  syncSpectrum();
+});
+
 async function boot() {
   state.manifest = await getJSON("manifest.json");
   state.meta = await getJSON("meta.json");
