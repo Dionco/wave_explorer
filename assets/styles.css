@@ -768,11 +768,6 @@ body.theme-dark .resid-line { stroke: #b8b09a; opacity: 0.85; }
   stroke: var(--muted-soft); stroke-width: 0.8;
   stroke-dasharray: 3 3; fill: none; opacity: 0.5;
 }
-.element-label {
-  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
-  text-anchor: middle; pointer-events: none;
-}
-
 /* Dark cursor tooltip */
 .cursor-tooltip {
   position: fixed; pointer-events: none; z-index: 1000;
@@ -795,3 +790,47 @@ body.theme-dark .resid-line { stroke: #b8b09a; opacity: 0.85; }
 .cursor-tooltip .tt-sep {
   height: 1px; background: rgba(255,255,255,0.08); margin: 6px -12px;
 }
+
+/* ── VALD line overlay ─────────────────────────────────────────────────── */
+.vald-line {
+  pointer-events: none;
+}
+.vald-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  text-anchor: start;
+  pointer-events: none;
+}
+.vald-toolbar-controls {
+  font-size: 12px;
+}
+
+/* ── Full-range single-star model: compute spinner ─────────────────────── */
+.spinner-hidden {
+  display: none;
+}
+.spinner-active {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: full-model-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+@keyframes full-model-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Teff-stack mode ─────────────────────────────────────────────────── */
+.star-label {
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 3px;
+}
+.cursor-tooltip .tt-row.dim { opacity: 0.45; }
+.cursor-tooltip .tt-row.hl span { font-weight: 700; }

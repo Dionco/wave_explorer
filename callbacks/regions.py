@@ -427,8 +427,6 @@ def register_region_callbacks(app, dataset, min_w, max_w):
             base.get("added", False) and base.get("original_lower") is None
         )
 
-        el = str(base.get("element", "?"))
-        ion = str(base.get("ion", "?"))
         tag = ""
         if is_excluded:
             tag = "  · EXCLUDED"
@@ -436,7 +434,8 @@ def register_region_callbacks(app, dataset, min_w, max_w):
             tag = "  · added"
         if staged is not None:
             tag = tag + (" · pending" if tag else "  · pending")
-        label = f"#{idx + 1}  {el} {ion}  {lo:.3f}–{hi:.3f} nm{tag}"
+        # line-list species (element/ion) intentionally omitted — unreliable
+        label = f"#{idx + 1}  {lo:.3f}–{hi:.3f} nm{tag}"
 
         shown = {"display": "inline-flex"}
         exclude_style = hidden if is_excluded else shown

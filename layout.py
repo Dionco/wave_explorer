@@ -110,6 +110,22 @@ def build_header(dataset: dict) -> html.Div:
                     html.Span(str(len(dataset["ll_entries"])), className="hc-val"),
                 ],
             ),
+            *(
+                [
+                    html.Div(
+                        className="h-chip c-amber",
+                        children=[
+                            "mode ",
+                            html.Span(
+                                f"Teff stack ×{len(dataset['stack_teffs'])}",
+                                className="hc-val",
+                            ),
+                        ],
+                    )
+                ]
+                if dataset.get("stacked")
+                else []
+            ),
             html.Div(className="h-spacer"),
             html.Button(
                 "\u270e Draw Region",
@@ -745,6 +761,7 @@ def build_table_panel(
 
 def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
     all_rows = dataset["region_summary"]
+    stacked = bool(dataset.get("stacked"))
     _common_w = dataset["common_w"]
     _min_w = float(_common_w[0])
     _max_w = float(_common_w[-1])
@@ -806,6 +823,19 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
 
     ll_entries_jsonable = [_jsonable_entry(e) for e in dataset["ll_entries"]]
 
+    # Initial (mean-view) VALD overlay; precomputed in build_dataset. The
+    # star-focus callback swaps in a full-range payload when a star is focused.
+    _vald_payload = dataset.get("vald_payload")
+    if _vald_payload is None:
+        from .vald import build_vald_payload
+        _common_w = dataset["common_w"]
+        _vald_payload = build_vald_payload(
+            dataset.get("vald_entries", []),
+            lambda_min=float(_common_w[0]),
+            lambda_max=float(_common_w[-1]),
+            observed_ranges=dataset.get("observed_ranges"),
+        )
+
     return html.Div(
         [
             build_header(dataset),
@@ -826,8 +856,97 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
                                                 "Spectrum", className="eyebrow"
                                             ),
                                             html.Div(
-                                                "Observation, fit & residuals",
+                                                "Teff sequence · stacked offsets"
+                                                if stacked
+                                                else "Observation, fit & residuals",
                                                 className="display-md",
+                                            ),
+                                            html.Div(
+                                                style=(
+                                                    {"display": "none"}
+                                                    if stacked
+                                                    else {
+                                                        "display": "flex",
+                                                        "gap": "8px",
+                                                        "alignItems": "center",
+                                                        "marginTop": "6px",
+                                                    }
+                                                ),
+                                                children=[
+                                                    dcc.Dropdown(
+                                                        id="star-select",
+                                                        options=(
+                                                            [
+                                                                {
+                                                                    "label": "All stars (mean)",
+                                                                    "value": "__mean__",
+                                                                }
+                                                            ]
+                                                            + [
+                                                                {"label": s, "value": s}
+                                                                for s in sorted(
+                                                                    dataset.get(
+                                                                        "fit_data_cache",
+                                                                        {},
+                                                                    )
+                                                                )
+                                                            ]
+                                                        ),
+                                                        value="__mean__",
+                                                        clearable=False,
+                                                        style={"minWidth": "220px"},
+                                                    ),
+                                                    html.Span(
+                                                        id="full-model-spinner",
+                                                        className="spinner-hidden",
+                                                        title="Computing full-range model…",
+                                                    ),
+                                                ],
+                                            ),
+                                        ],
+                                    ),
+                                    html.Div(
+                                        className="vald-toolbar-controls",
+                                        style={
+                                            "display": "flex",
+                                            "gap": "10px",
+                                            "alignItems": "center",
+                                        },
+                                        children=[
+                                            html.Button(
+                                                "│ VALD lines",
+                                                id="vald-toggle-btn",
+                                                n_clicks=0,
+                                                className="btn btn-sm",
+                                                title="Show VALD atomic/"
+                                                "molecular line positions",
+                                            ),
+                                            html.Span(
+                                                "min depth",
+                                                className="eyebrow",
+                                                style={"whiteSpace": "nowrap"},
+                                            ),
+                                            html.Div(
+                                                style={
+                                                    "width": "200px",
+                                                    "padding": "0 12px",
+                                                },
+                                                children=dcc.Slider(
+                                                    id="vald-depth-min-slider",
+                                                    min=0.0,
+                                                    max=1.0,
+                                                    step=0.05,
+                                                    value=0.10,
+                                                    marks={
+                                                        0.0: "0",
+                                                        0.5: "0.5",
+                                                        1.0: "1",
+                                                    },
+                                                    tooltip={
+                                                        "always_visible": False,
+                                                        "placement": "bottom",
+                                                    },
+                                                ),
                                             ),
                                         ],
                                     ),
@@ -887,9 +1006,20 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
             dcc.Store(id="source-type", data="none"),
             dcc.Store(
                 id="spectrum-data-store",
-                data=build_spectrum_payload(dataset),
+                data=(
+                    dataset["stacked_payload"]
+                    if stacked
+                    else build_spectrum_payload(dataset)
+                ),
             ),
+            # ── Single-star full-range model state ──────────────────────────
+            dcc.Store(
+                id="full-model-status-store", data="idle"
+            ),  # idle|computing|ready|error
             dcc.Store(id="ll-entries-store", data=ll_entries_jsonable),
+            dcc.Store(id="vald-lines-store", data=_vald_payload),
+            dcc.Store(id="vald-visible-store", data=False),
+            dcc.Store(id="vald-depth-min-store", data=0.10),
             dcc.Store(id="ll-stats-store", data=ll_stats_jsonable),
             dcc.Store(id="drag-result-store", data=None),
             dcc.Store(id="draw-region-store", data=None),

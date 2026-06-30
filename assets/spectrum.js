@@ -25,6 +25,9 @@
   var innerW = PLOT_W - PAD.left - PAD.right;
   var fullBottom = RESID.top + RESID.h;
 
+  var MAIN_H_NORMAL = MAIN.h;                  // 320
+  var MAIN_H_STACKED = fullBottom - MAIN.top;  // resid panel absorbed
+
   var DRAG_THRESHOLD = 4; // px (SVG units) gate for click-vs-pan
   var MIN_SPAN = 0.4;     // nm — min zoom span
   var MIN_REGION_W = 0.005; // nm — min region width on edge-drag
@@ -37,10 +40,16 @@
   var view = null;          // {min, max}
   var selectedIdx = null;
   var hoveredIdx = null;
+  var hoveredStar = null;    // index into data.stars (stacked mode)
   var cursorPx = null;       // SVG-space cursor x, or null
   var drawMode = false;
   var fluxRange = null;      // {min, max}
   var residMax = 1;          // symmetric resid half-range
+
+  // ── VALD overlay state ───────────────────────────────────────────────────
+  var vald = null;          // {wavelengths, elements, ions, depths, ...}
+  var valdVisible = false;
+  var valdDepthMin = 0.10;
 
   var interaction = null;    // active gesture (mutable during a drag)
   var rafPending = false;
@@ -80,6 +89,14 @@
     return (data.elementColors && data.elementColors[sym]) ||
       data.elementColorFallback || "#75705f";
   }
+  function teffColor(t) {
+    if (!data || !data.stars || data.stars.length < 2) return "var(--accent)";
+    var ts = data.stars.map(function (s) { return s.teff; });
+    var tmin = Math.min.apply(null, ts), tmax = Math.max.apply(null, ts);
+    var u = tmax > tmin ? (t - tmin) / (tmax - tmin) : 0.5;
+    // cool red (hue 8) → hot blue (hue 215)
+    return "hsl(" + Math.round(8 + 207 * u) + ", 58%, 42%)";
+  }
 
   // ── Accessors ────────────────────────────────────────────────────────────
   function host() { return document.getElementById("spectrum-graph"); }
@@ -106,6 +123,21 @@
   function regionStats(i) {
     var r = (data && data.regions && data.regions[i]) || {};
     return { n_stars: r.n_stars || 0, n_pix: r.n_pix || 0 };
+  }
+
+  function nearbyVald(lambda, halfWidthNm, maxRows) {
+    if (!vald || !vald.wavelengths || !valdVisible) return [];
+    var w = vald.wavelengths;
+    var hits = [];
+    for (var i = 0; i < w.length; i++) {
+      if (vald.depths[i] < valdDepthMin) continue;
+      var dl = w[i] - lambda;
+      if (dl < -halfWidthNm) continue;
+      if (dl > halfWidthNm) break;  // sorted → can short-circuit
+      hits.push({ idx: i, dist: Math.abs(dl) });
+    }
+    hits.sort(function (a, b) { return a.dist - b.dist; });
+    return hits.slice(0, maxRows);
   }
 
   // ── Scales ───────────────────────────────────────────────────────────────
@@ -138,20 +170,36 @@
     return { min: nmin, max: nmax };
   }
 
+  // Nearest index in the sorted-ascending `data.wavelengths` to `lambda`,
+  // via binary search (O(log n)). Works for the uniform mean grid AND the
+  // non-uniform single-star full-range axis, unlike a fractional-index map.
+  function nearestIndex(lambda) {
+    var w = data.wavelengths, n = w.length;
+    if (n === 0) return 0;
+    var lo = 0, hi = n - 1;
+    if (lambda <= w[0]) return 0;
+    if (lambda >= w[hi]) return hi;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (w[mid] <= lambda) lo = mid; else hi = mid;
+    }
+    // lo and hi now bracket lambda; pick the closer of the two.
+    return (lambda - w[lo] <= w[hi] - lambda) ? lo : hi;
+  }
+
   function sampleAt(key, lambda) {
-    var arr = data[key], w = data.wavelengths;
-    var frac = (lambda - data.lambdaMin) / (data.lambdaMax - data.lambdaMin);
-    var i = Math.round(frac * (w.length - 1));
-    i = Math.max(0, Math.min(w.length - 1, i));
-    return arr[i];
+    return data[key][nearestIndex(lambda)];
   }
 
   // ── Path building ────────────────────────────────────────────────────────
-  function buildPath(arr, yFn) {
+  function buildPath(arr, yFn, offset) {
     var w = data.wavelengths, d = "", started = false;
+    var off = offset || 0;
     for (var i = 0; i < w.length; i++) {
       if (w[i] < view.min - 0.05 || w[i] > view.max + 0.05) continue;
-      var x = xScale(w[i]).toFixed(2), y = yFn(arr[i]).toFixed(2);
+      var v = arr[i];
+      if (v == null || !isFinite(v)) { started = false; continue; }
+      var x = xScale(w[i]).toFixed(2), y = yFn(v + off).toFixed(2);
       d += (started ? "L" : "M") + x + "," + y;
       started = true;
     }
@@ -207,40 +255,62 @@
     );
 
     var tk = ticks();
-    var fluxTicks = niceTicks(fluxRange.min, fluxRange.max, 5);
+    var stk = !!(data && data.stacked);
+    var fluxTicks = niceTicks(fluxRange.min, fluxRange.max, stk ? 9 : 5);
     var residTicks = [-residMax * 0.66, 0, residMax * 0.66];
     var parts = [];
 
     // backgrounds
     parts.push(rect(PAD.left, MAIN.top, innerW, MAIN.h, "var(--paper)"));
-    parts.push(rect(PAD.left, RESID.top, innerW, RESID.h, "var(--paper-soft)"));
+    if (!stk) {
+      parts.push(rect(PAD.left, RESID.top, innerW, RESID.h, "var(--paper-soft)"));
+    }
 
     // grid
     var grid = el("g", { class: "spectrum-grid" });
     tk.arr.forEach(function (t) {
       grid.appendChild(line(xScale(t), MAIN.top, xScale(t), MAIN.top + MAIN.h));
-      grid.appendChild(line(xScale(t), RESID.top, xScale(t), RESID.top + RESID.h));
+      if (!stk) {
+        grid.appendChild(line(xScale(t), RESID.top, xScale(t), RESID.top + RESID.h));
+      }
     });
     fluxTicks.forEach(function (f) {
       grid.appendChild(line(PAD.left, yMain(f), PAD.left + innerW, yMain(f)));
     });
-    residTicks.forEach(function (rv) {
-      grid.appendChild(line(PAD.left, yResid(rv), PAD.left + innerW, yResid(rv)));
-    });
+    if (!stk) {
+      residTicks.forEach(function (rv) {
+        grid.appendChild(line(PAD.left, yResid(rv), PAD.left + innerW, yResid(rv)));
+      });
+    }
     parts.push(grid);
 
     // continuum + zero lines
-    parts.push(el("line", {
-      class: "continuum-line",
-      x1: PAD.left, x2: PAD.left + innerW, y1: yMain(1.0), y2: yMain(1.0),
-    }));
-    parts.push(el("line", {
-      x1: PAD.left, x2: PAD.left + innerW, y1: yResid(0), y2: yResid(0),
-      stroke: "var(--ink-3)", "stroke-width": 0.8, opacity: 0.5,
-    }));
+    if (stk) {
+      data.stars.forEach(function (s) {
+        parts.push(el("line", {
+          class: "continuum-line",
+          x1: PAD.left, x2: PAD.left + innerW,
+          y1: yMain(1.0 + s.offset), y2: yMain(1.0 + s.offset),
+          opacity: 0.35,
+        }));
+      });
+    } else {
+      parts.push(el("line", {
+        class: "continuum-line",
+        x1: PAD.left, x2: PAD.left + innerW, y1: yMain(1.0), y2: yMain(1.0),
+      }));
+      parts.push(el("line", {
+        x1: PAD.left, x2: PAD.left + innerW, y1: yResid(0), y2: yResid(0),
+        stroke: "var(--ink-3)", "stroke-width": 0.8, opacity: 0.5,
+      }));
+    }
 
     // region bands
     parts.push(renderRegions());
+
+    // VALD line overlay (vertical dashed markers, below data lines so they
+    // do not occlude the obs/fit curves)
+    parts.push(renderVald());
 
     // draw-in-progress preview
     if (interaction && interaction.kind === "draw" && interaction.preview) {
@@ -254,23 +324,49 @@
     }
 
     // data lines
-    parts.push(el("path", { class: "obs-line", d: buildPath(data.flux, yMain) }));
-    parts.push(el("path", { class: "fit-line", d: buildPath(data.fitFlux, yMain) }));
-    parts.push(el("path", { class: "resid-line", d: buildPath(data.resid, yResid) }));
-
-    // residual outlier dots
-    var dots = el("g", {});
-    var w = data.wavelengths, rd = data.resid;
-    for (var i = 0; i < w.length; i++) {
-      if (w[i] < view.min || w[i] > view.max) continue;
-      if (Math.abs(rd[i]) > residMax * 0.55) {
-        dots.appendChild(el("circle", {
-          cx: xScale(w[i]), cy: yResid(rd[i]), r: 1.6,
-          fill: rd[i] > 0 ? "var(--accent)" : "var(--ink)", opacity: 0.7,
+    if (stk) {
+      data.stars.forEach(function (s, k) {
+        var hov = hoveredStar === k;
+        parts.push(el("path", {
+          class: "obs-line",
+          d: buildPath(s.flux, yMain, s.offset),
+          style: hov ? "opacity:1;stroke-width:1.5" : null,
         }));
+        parts.push(el("path", {
+          class: "fit-line",
+          d: buildPath(s.fitFlux, yMain, s.offset),
+          style: "stroke:" + teffColor(s.teff) +
+            (hov ? ";stroke-width:2.2" : ""),
+        }));
+      });
+      // pinned star labels at the left edge
+      data.stars.forEach(function (s) {
+        parts.push(el("text", {
+          class: "star-label",
+          x: PAD.left + 8,
+          y: yMain(1.0 + s.offset) - 6,
+          fill: teffColor(s.teff),
+        }, s.slug + " · " + Math.round(s.teff) + " K"));
+      });
+    } else {
+      parts.push(el("path", { class: "obs-line", d: buildPath(data.flux, yMain) }));
+      parts.push(el("path", { class: "fit-line", d: buildPath(data.fitFlux, yMain) }));
+      parts.push(el("path", { class: "resid-line", d: buildPath(data.resid, yResid) }));
+
+      // residual outlier dots
+      var dots = el("g", {});
+      var w = data.wavelengths, rd = data.resid;
+      for (var i = 0; i < w.length; i++) {
+        if (w[i] < view.min || w[i] > view.max) continue;
+        if (rd[i] != null && Math.abs(rd[i]) > residMax * 0.55) {
+          dots.appendChild(el("circle", {
+            cx: xScale(w[i]), cy: yResid(rd[i]), r: 1.6,
+            fill: rd[i] > 0 ? "var(--accent)" : "var(--ink)", opacity: 0.7,
+          }));
+        }
       }
+      parts.push(dots);
     }
-    parts.push(dots);
 
     // cursor crosshair
     if (cursorPx != null && cursorPx > PAD.left && cursorPx < PAD.left + innerW) {
@@ -282,7 +378,7 @@
     }
 
     // axes
-    parts.push(renderAxes(tk, fluxTicks, residTicks));
+    parts.push(renderAxes(tk, fluxTicks, residTicks, stk));
 
     // commit
     svgEl.textContent = "";
@@ -322,14 +418,18 @@
         "stroke-width": r.excluded ? 1 : 0,
         "data-region": i, style: "cursor:pointer",
       }));
-      rg.appendChild(el("rect", {
-        x: x1, y: RESID.top, width: bw, height: RESID.h, fill: fill,
-        opacity: 0.7, "data-region": i, style: "cursor:pointer",
-      }));
-      // element rail (bottom of main)
+      if (!(data && data.stacked)) {
+        // resid-panel band — in stacked mode the main panel covers this
+        // area, so the extra rect would double-shade the lower traces.
+        rg.appendChild(el("rect", {
+          x: x1, y: RESID.top, width: bw, height: RESID.h, fill: fill,
+          opacity: 0.7, "data-region": i, style: "cursor:pointer",
+        }));
+      }
+      // region rail (bottom of main) — neutral; line-list species is unreliable
       rg.appendChild(el("rect", {
         x: x1, y: MAIN.top + MAIN.h - 3, width: bw, height: 3,
-        fill: elementColor(r.element), opacity: r.excluded ? 0.3 : 0.9,
+        fill: "var(--muted)", opacity: r.excluded ? 0.3 : 0.9,
       }));
       // quality stripe (top of main)
       rg.appendChild(el("rect", {
@@ -380,19 +480,45 @@
           rg.appendChild(hg);
         });
       }
-      // element label
-      if (bw > 30) {
-        rg.appendChild(el("text", {
-          class: "element-label", x: (x1 + x2) / 2, y: MAIN.top + 14,
-          fill: elementColor(r.element), opacity: r.excluded ? 0.45 : 1,
-        }, r.element + " " + romanize(r.ion)));
-      }
+      // (line-list species label intentionally omitted — identifications unreliable)
       g.appendChild(rg);
     }
     return g;
   }
 
-  function renderAxes(tk, fluxTicks, residTicks) {
+  function renderVald() {
+    var g = el("g", { class: "vald-overlay", "pointer-events": "none" });
+    if (!valdVisible || !vald || !vald.wavelengths) return g;
+    var w = vald.wavelengths;
+    var labelStepPx = 36;
+    var lastLabelPx = -Infinity;
+    var topY = MAIN.top + 4;
+    var botY = MAIN.top + MAIN.h;
+    for (var i = 0; i < w.length; i++) {
+      var lam = w[i];
+      if (lam < view.min || lam > view.max) continue;
+      if (vald.depths[i] < valdDepthMin) continue;
+      var x = xScale(lam);
+      var col = elementColor(vald.elements[i]);
+      var opacity = Math.min(1, 0.35 + 0.65 * vald.depths[i]);
+      g.appendChild(el("line", {
+        class: "vald-line",
+        x1: x, x2: x, y1: topY, y2: botY,
+        stroke: col, "stroke-width": 1, "stroke-dasharray": "3 3",
+        opacity: opacity,
+      }));
+      if (x - lastLabelPx >= labelStepPx) {
+        g.appendChild(el("text", {
+          class: "vald-label", x: x + 2, y: topY + 9,
+          fill: col, opacity: opacity,
+        }, vald.elements[i] + " " + romanize(vald.ions[i])));
+        lastLabelPx = x;
+      }
+    }
+    return g;
+  }
+
+  function renderAxes(tk, fluxTicks, residTicks, stk) {
     var g = el("g", {});
     // x-axis
     g.appendChild(el("line", {
@@ -427,22 +553,24 @@
     g.appendChild(el("text", {
       class: "spectrum-axis-label", x: PAD.left + 6, y: MAIN.top + 12,
       "text-anchor": "start", style: "font-weight:600",
-    }, "normalized flux"));
+    }, stk ? "normalized flux + offset" : "normalized flux"));
     // resid y-axis
-    g.appendChild(el("line", {
-      x1: PAD.left, x2: PAD.left, y1: RESID.top, y2: RESID.top + RESID.h,
-      stroke: "var(--hairline)",
-    }));
-    residTicks.forEach(function (rv) {
+    if (!stk) {
+      g.appendChild(el("line", {
+        x1: PAD.left, x2: PAD.left, y1: RESID.top, y2: RESID.top + RESID.h,
+        stroke: "var(--hairline)",
+      }));
+      residTicks.forEach(function (rv) {
+        g.appendChild(el("text", {
+          class: "spectrum-axis-label", x: PAD.left - 8, y: yResid(rv) + 3,
+          "text-anchor": "end",
+        }, (rv > 0 ? "+" : "") + rv.toFixed(3)));
+      });
       g.appendChild(el("text", {
-        class: "spectrum-axis-label", x: PAD.left - 8, y: yResid(rv) + 3,
-        "text-anchor": "end",
-      }, (rv > 0 ? "+" : "") + rv.toFixed(3)));
-    });
-    g.appendChild(el("text", {
-      class: "spectrum-axis-label", x: PAD.left + 6, y: RESID.top + 12,
-      "text-anchor": "start", style: "font-weight:600",
-    }, "obs − fit"));
+        class: "spectrum-axis-label", x: PAD.left + 6, y: RESID.top + 12,
+        "text-anchor": "start", style: "font-weight:600",
+      }, "obs − fit"));
+    }
     // legend
     var lg = el("g", {
       transform: "translate(" + (PLOT_W - PAD.right - 200) + "," +
@@ -459,18 +587,21 @@
       class: "spectrum-axis-label", x: 32, y: 16,
     }, "obs"));
     lg.appendChild(el("line", {
-      x1: 66, x2: 84, y1: 13, y2: 13, stroke: "var(--accent)", "stroke-width": 1.6,
+      x1: 66, x2: 84, y1: 13, y2: 13,
+      stroke: stk ? "hsl(110, 58%, 42%)" : "var(--accent)", "stroke-width": 1.6,
     }));
     lg.appendChild(el("text", {
       class: "spectrum-axis-label", x: 88, y: 16,
-    }, "fit"));
-    lg.appendChild(el("line", {
-      x1: 118, x2: 136, y1: 13, y2: 13, stroke: "var(--ink-3)",
-      "stroke-width": 1.2, "stroke-dasharray": "3 2",
-    }));
-    lg.appendChild(el("text", {
-      class: "spectrum-axis-label", x: 140, y: 16,
-    }, "resid"));
+    }, stk ? "fit (Teff color)" : "fit"));
+    if (!stk) {
+      lg.appendChild(el("line", {
+        x1: 118, x2: 136, y1: 13, y2: 13, stroke: "var(--ink-3)",
+        "stroke-width": 1.2, "stroke-dasharray": "3 2",
+      }));
+      lg.appendChild(el("text", {
+        class: "spectrum-axis-label", x: 140, y: 16,
+      }, "resid"));
+    }
     g.appendChild(lg);
     return g;
   }
@@ -495,7 +626,9 @@
   function svgCoords(e) {
     var rect = svgEl.getBoundingClientRect();
     var px = ((e.clientX - rect.left) / rect.width) * PLOT_W;
-    return { px: px, lambda: xInvert(px), clientX: e.clientX, clientY: e.clientY };
+    var py = ((e.clientY - rect.top) / rect.height) * PLOT_H;
+    return { px: px, py: py, lambda: xInvert(px),
+             clientX: e.clientX, clientY: e.clientY };
   }
 
   function bindPointer() {
@@ -572,6 +705,7 @@
     // hover
     var hit = hitRegion(p.lambda);
     hoveredIdx = hit;
+    if (data && data.stacked) hoveredStar = nearestStar(p.lambda, p.py);
     updateTooltip(p);
     scheduleRender();
   }
@@ -622,6 +756,7 @@
     if (interaction) return;
     cursorPx = null;
     hoveredIdx = null;
+    hoveredStar = null;
     hideTooltip();
     scheduleRender();
   }
@@ -647,6 +782,19 @@
     return null;
   }
 
+  function nearestStar(lambda, py) {
+    if (!data || !data.stars || !data.stars.length) return null;
+    var idx = nearestIndex(lambda), best = null, bestD = Infinity;
+    for (var k = 0; k < data.stars.length; k++) {
+      var s = data.stars[k];
+      var v = s.flux[idx];
+      var base = (v != null && isFinite(v)) ? v : 1.0;
+      var d = Math.abs(yMain(base + s.offset) - py);
+      if (d < bestD) { bestD = d; best = k; }
+    }
+    return best;
+  }
+
   // Stage an in-flight edge preview into pendingChanges so the band stretches
   // live. Mirrors the server's stage_drag; the committed value is sent on up.
   function stageEdgePreview(i, lo, hi) {
@@ -661,6 +809,65 @@
     var tip = document.getElementById("cursor-tooltip");
     if (!tip || !data) return;
     var cl = p.lambda;
+
+    if (data.stacked) {
+      var sIdx = hoveredStar != null ? hoveredStar : 0;
+      var s = data.stars[sIdx];
+      var di = nearestIndex(cl);
+      var ov = s.flux[di], fv = s.fitFlux[di];
+      var html =
+        '<div class="tt-title"><span>' + s.slug + "</span><span>" +
+        Math.round(s.teff) + " K</span></div>" +
+        ttRow("cursor λ", cl.toFixed(3)) +
+        ttRow("obs flux", ov != null && isFinite(ov) ? ov.toFixed(4) : "—") +
+        ttRow("fit", fv != null && isFinite(fv) ? fv.toFixed(4) : "—");
+
+      if (hoveredIdx != null) {
+        var r = effRegion(hoveredIdx), c2 = regionChi2(hoveredIdx);
+        html += '<div class="tt-sep"></div>' +
+          '<div class="tt-title"><span>Region #' + (hoveredIdx + 1) +
+          '</span><span class="q-badge q-' + qualityTier(c2) + '">' +
+          qualityLabel(c2) + "</span></div>" +
+          ttRow("range", r.lower.toFixed(3) + " – " + r.upper.toFixed(3)) +
+          ttRow("med χ²/N", c2 != null && isFinite(c2) ? c2.toFixed(3) : "—");
+        var reg = data.regions && data.regions[hoveredIdx];
+        if (reg && reg.perStar) {
+          html += '<div class="tt-sep"></div>' +
+            '<div class="tt-row"><span>star</span><span>χ²/N</span></div>';
+          // hottest first → rows mirror the visual stacking (coolest at bottom)
+          for (var k = data.stars.length - 1; k >= 0; k--) {
+            var st = data.stars[k], ps = reg.perStar[k];
+            var used = ps && ps.npix > 0;
+            var cls = (used ? "" : " dim") + (k === sIdx ? " hl" : "");
+            html += '<div class="tt-row' + cls + '"><span>' +
+              (used ? "✓ " : "✗ ") + st.slug + "</span><span>" +
+              (used && ps.chi2 != null ? ps.chi2.toFixed(2) : "—") +
+              "</span></div>";
+          }
+        }
+      }
+
+      var vh = "";
+      var nearS = nearbyVald(cl, 0.08, 4);
+      if (nearS.length) {
+        vh = '<div class="tt-sep"></div>' +
+          '<div class="tt-row"><span>VALD nearby</span><span></span></div>';
+        for (var q = 0; q < nearS.length; q++) {
+          var nq = nearS[q].idx;
+          vh += ttRow(
+            vald.elements[nq] + " " + romanize(vald.ions[nq]) +
+              " @ " + vald.wavelengths[nq].toFixed(3),
+            "d=" + vald.depths[nq].toFixed(2)
+          );
+        }
+      }
+      tip.innerHTML = html + vh;
+      tip.style.display = "block";
+      tip.style.left = (p.clientX + 16) + "px";
+      tip.style.top = (p.clientY + 16) + "px";
+      return;
+    }
+
     var head;
     if (hoveredIdx != null) {
       var r = effRegion(hoveredIdx), c2 = regionChi2(hoveredIdx);
@@ -679,11 +886,25 @@
       head = '<div class="tt-title"><span>cursor</span></div>';
     }
     var resid = sampleAt("resid", cl);
+    var valdHtml = "";
+    var near = nearbyVald(cl, 0.08, 4);
+    if (near.length) {
+      valdHtml = '<div class="tt-sep"></div>'
+        + '<div class="tt-row"><span>VALD nearby</span><span></span></div>';
+      for (var k = 0; k < near.length; k++) {
+        var ni = near[k].idx;
+        var lab = vald.elements[ni] + " " + romanize(vald.ions[ni]);
+        var lamS = vald.wavelengths[ni].toFixed(3);
+        var dpS = vald.depths[ni].toFixed(2);
+        valdHtml += ttRow(lab + " @ " + lamS, "d=" + dpS);
+      }
+    }
     tip.innerHTML = head +
       ttRow("cursor λ", cl.toFixed(3)) +
       ttRow("obs flux", sampleAt("flux", cl).toFixed(4)) +
       ttRow("fit", sampleAt("fitFlux", cl).toFixed(4)) +
-      ttRow("resid", (resid >= 0 ? "+" : "") + resid.toFixed(4));
+      ttRow("resid", (resid >= 0 ? "+" : "") + resid.toFixed(4)) +
+      valdHtml;
     tip.style.display = "block";
     tip.style.left = (p.clientX + 16) + "px";
     tip.style.top = (p.clientY + 16) + "px";
@@ -761,30 +982,66 @@
   }
 
   // ── Public sync entry — called by the Dash clientside callback ───────────
-  function sync(specData, entries, pending, selected, drawActive, goto) {
+  function sync(specData, entries, pending, selected, drawActive, goto,
+                valdPayload, visible, depthMin) {
     var firstData = false;
+    var newData = false;
     if (specData && specData.wavelengths) {
       if (!data) firstData = true;
+      if (specData !== data) newData = true;
       data = specData;
     }
     if (!data) return;
-    if (firstData) {
+    if (newData) {
+      // Re-fit the flux/residual y-scales whenever a new payload arrives
+      // (e.g. switching to a single star's full-range spectrum).
+      MAIN.h = data.stacked ? MAIN_H_STACKED : MAIN_H_NORMAL;
       var fmin = Infinity, fmax = -Infinity, rmax = 0;
-      for (var i = 0; i < data.flux.length; i++) {
-        fmin = Math.min(fmin, data.flux[i], data.fitFlux[i]);
-        fmax = Math.max(fmax, data.flux[i], data.fitFlux[i]);
-        rmax = Math.max(rmax, Math.abs(data.resid[i]));
+      if (data.stacked) {
+        data.stars.forEach(function (s) {
+          for (var i = 0; i < s.flux.length; i++) {
+            var o = s.flux[i], f = s.fitFlux[i];
+            if (o != null && isFinite(o)) {
+              fmin = Math.min(fmin, o + s.offset);
+              fmax = Math.max(fmax, o + s.offset);
+            }
+            if (f != null && isFinite(f)) {
+              fmin = Math.min(fmin, f + s.offset);
+              fmax = Math.max(fmax, f + s.offset);
+            }
+          }
+        });
+        if (!isFinite(fmin)) { fmin = 0; fmax = 1; }
+      } else {
+        for (var i = 0; i < data.flux.length; i++) {
+          fmin = Math.min(fmin, data.flux[i], data.fitFlux[i]);
+          fmax = Math.max(fmax, data.flux[i], data.fitFlux[i]);
+          rmax = Math.max(rmax, Math.abs(data.resid[i]));
+        }
       }
       var fpad = 0.04 * (fmax - fmin || 1);
       fluxRange = { min: fmin - fpad, max: fmax + fpad };
       residMax = Math.max(0.01, rmax * 1.15);
-      view = { min: data.lambdaMin, max: data.lambdaMax };
+      // On first load, or when a single-star full-range payload arrives, reset
+      // the x-domain to the payload bounds so the whole range is reachable. The
+      // windowed mean view (no fullRange flag, not first load) keeps its view.
+      if (firstData || data.fullRange) {
+        view = { min: data.lambdaMin, max: data.lambdaMax };
+      } else if (view) {
+        // Keep the current window but re-clamp to the new payload bounds.
+        view = clampView(view.min, view.max);
+      } else {
+        view = { min: data.lambdaMin, max: data.lambdaMax };
+      }
     }
     if (entries != null) llEntries = entries;
     if (pending != null) pendingChanges = pending || {};
     selectedIdx = selected && selected.region_idx != null
       ? selected.region_idx : null;
     drawMode = !!drawActive;
+    if (valdPayload != null) vald = valdPayload;
+    if (visible != null) valdVisible = !!visible;
+    if (depthMin != null && isFinite(+depthMin)) valdDepthMin = +depthMin;
     wirePopover();
 
     // Table "go to region": frame the region when the tick advances.

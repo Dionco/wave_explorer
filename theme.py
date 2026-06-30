@@ -145,5 +145,19 @@ ELEMENT_COLORS = {
     "Si": "#8a4a4a",
     "Ni": "#6c5a8e",
     "Ti": "#2e6a8a",
+    # Molecular species (common in NIR / cool-star spectra)
+    "TiO": "#b3553b",
+    "MgH": "#9e6f3a",
+    "OH":  "#3d8a8a",
+    "CN":  "#3d6a3d",
+    "CO":  "#8a6e3d",
+    "H2O": "#3d6a8a",
+    # Additional atomic species
+    "Cr": "#7d5a3a",
+    "V":  "#5a7d3a",
+    "Ba": "#a08040",
+    "Al": "#8a5050",
+    "Co": "#506a8a",
+    "K":  "#b85529",
 }
 ELEMENT_COLOR_FALLBACK = "#75705f"

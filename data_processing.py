@@ -303,7 +303,12 @@ def resolve_line_list_path(
 
     detected: List[str] = []
     for folder_path in found.values():
-        config_path = folder_path.parent / "config.ini"
+        # Prefer the per-retrieval config_copy.ini (the actual config used
+        # for this run); fall back to the star-level config.ini only if the
+        # retrieval copy is missing.
+        config_path = folder_path / "config_copy.ini"
+        if not config_path.exists():
+            config_path = folder_path.parent / "config.ini"
         if not config_path.exists():
             continue
         cfg = configparser.ConfigParser()
@@ -336,6 +341,39 @@ def resolve_line_list_path(
 # ══════════════════════════════════════════════════════════════════════════════
 # Spectral interpolation & smoothing
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+def compute_observed_ranges(
+    flat_data: dict, gap_factor: float = 5.0
+) -> List[Tuple[float, float]]:
+    """Union of contiguous wavelength spans actually sampled by observations.
+
+    Detects gaps between echelle orders by finding pixel-spacing jumps
+    bigger than `gap_factor` × the per-star median Δλ. Returned ranges are
+    merged across all stars so VALD overlay and other coverage-aware
+    consumers can filter cleanly.
+    """
+    ranges: List[Tuple[float, float]] = []
+    for slug in sorted(flat_data):
+        w = flat_data[slug][0]
+        if len(w) < 2:
+            continue
+        dw = np.diff(w)
+        median_dw = float(np.median(dw))
+        gap_threshold = max(0.05, gap_factor * median_dw)
+        gap_idx = np.where(dw > gap_threshold)[0]
+        starts = [0] + [int(i) + 1 for i in gap_idx]
+        ends = [int(i) for i in gap_idx] + [len(w) - 1]
+        for s, e in zip(starts, ends):
+            ranges.append((float(w[s]), float(w[e])))
+    ranges.sort()
+    merged: List[Tuple[float, float]] = []
+    for lo, hi in ranges:
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
 
 
 def flatten_full_spectrum(
@@ -538,9 +576,14 @@ def build_dataset(
     line_list_path: Optional[str],
     grid_step_nm: float,
     smooth_window: int,
+    vald_path: Optional[str] = None,
+    only_slugs: Optional[List[str]] = None,
 ) -> dict:
     """Load and process all spectral data for a given suffix."""
     found = discover_output_folders(retrievals_dir, suffix)
+    if only_slugs is not None:
+        wanted = set(only_slugs)
+        found = {s: p for s, p in found.items() if s in wanted}
     if not found:
         raise RuntimeError(
             f"No output folders for suffix '{suffix}' in {retrievals_dir}"
@@ -566,6 +609,11 @@ def build_dataset(
         raise RuntimeError(f"Line list not found: {resolved_ll}")
     ll_entries = load_line_list(resolved_ll)
     region_summary = summarize_region_chi2(fit_data_cache, ll_entries)
+
+    from .vald import parse_vald_lines
+    vald_entries: List[dict] = []
+    if vald_path:
+        vald_entries = parse_vald_lines(Path(vald_path).expanduser().resolve())
 
     w_min = float(np.nanmin([v[0].min() for v in flat_data.values()]))
     w_max = float(np.nanmax([v[0].max() for v in flat_data.values()]))
@@ -624,7 +672,19 @@ def build_dataset(
             )
         )
 
-    return dict(
+    observed_ranges = compute_observed_ranges(flat_data)
+    from .vald import build_vald_payload
+    # Mean-view VALD payload: filtered to the windowed common_w range and the
+    # mean observed coverage. The single-star full-range view rebuilds its own
+    # (build_single_star_vald_payload) so lines outside the fitted windows show.
+    vald_payload = build_vald_payload(
+        vald_entries,
+        lambda_min=float(common_w[0]),
+        lambda_max=float(common_w[-1]),
+        observed_ranges=observed_ranges,
+    )
+
+    dataset = dict(
         suffix=suffix,
         retrievals_dir=str(retrievals_dir),
         line_list=str(resolved_ll),
@@ -643,7 +703,17 @@ def build_dataset(
         ll_hover_stats=ll_hover_stats,
         region_summary=region_summary,
         fit_data_cache=fit_data_cache,
+        vald_entries=vald_entries,
+        vald_path=str(vald_path) if vald_path else None,
+        observed_ranges=observed_ranges,
+        vald_payload=vald_payload,
+        # slug -> output_* Path; only stars whose fit-data.fits loaded, so the
+        # keys line up with fit_data_cache (the star-select dropdown options).
+        output_folders={slug: found[slug] for slug in fit_data_cache},
     )
+    # Cached mean-view payload to restore when the user picks "All stars (mean)".
+    dataset["mean_payload"] = build_spectrum_payload(dataset)
+    return dataset
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -651,21 +721,13 @@ def build_dataset(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def build_spectrum_payload(dataset: dict) -> dict:
-    """Build the JSON-serializable payload for the spectrum-data-store.
+def _build_region_metadata(dataset: dict) -> dict:
+    """Build the region/colour/threshold metadata shared by every payload.
 
-    Carries the static data the client-side SVG renderer needs: the
-    obs/fit/resid arrays, the wavelength axis, and a per-region χ² + star
-    count list aligned to ll_entries by 0-based index.
-
-    χ² is keyed by region_summary's `region_idx` (region_summary may be a
-    subset of ll_entries — only regions with a fit). Star/pixel counts come
-    from ll_hover_stats, which is kept 1:1 with ll_entries by position.
-    Non-finite χ² becomes None so the payload is strict-JSON.
+    Reads only `region_summary`, `ll_entries`, and `ll_hover_stats` — never the
+    mean-view arrays — so it works for both the mean view and a single-star
+    full-range view (whose base dataset carries no `common_w`/mean arrays).
     """
-    def _floats(seq):
-        return [float(v) for v in seq]
-
     chi2_map = {}
     for r in dataset.get("region_summary", []):
         c2 = r.get("med_chi2")
@@ -689,16 +751,311 @@ def build_spectrum_payload(dataset: dict) -> dict:
             }
         )
 
-    wavelengths = _floats(dataset["common_w"])
     return {
+        "regions": regions,
+        "chi2Thresholds": [float(t) for t in CHI2_THRESHOLDS],
+        "elementColors": dict(ELEMENT_COLORS),
+        "elementColorFallback": ELEMENT_COLOR_FALLBACK,
+    }
+
+
+def build_spectrum_payload(dataset: dict) -> dict:
+    """Build the JSON-serializable payload for the spectrum-data-store.
+
+    Carries the static data the client-side SVG renderer needs: the
+    obs/fit/resid arrays, the wavelength axis, and a per-region χ² + star
+    count list aligned to ll_entries by 0-based index.
+
+    χ² is keyed by region_summary's `region_idx` (region_summary may be a
+    subset of ll_entries — only regions with a fit). Star/pixel counts come
+    from ll_hover_stats, which is kept 1:1 with ll_entries by position.
+    Non-finite χ² becomes None so the payload is strict-JSON.
+    """
+    def _floats(seq):
+        return [float(v) for v in seq]
+
+    wavelengths = _floats(dataset["common_w"])
+    payload = {
         "wavelengths": wavelengths,
         "flux": _floats(dataset["mean_obs_s"]),
         "fitFlux": _floats(dataset["mean_fit_s"]),
         "resid": _floats(dataset["mean_resid_s"]),
         "lambdaMin": wavelengths[0],
         "lambdaMax": wavelengths[-1],
-        "regions": regions,
-        "chi2Thresholds": [float(t) for t in CHI2_THRESHOLDS],
-        "elementColors": dict(ELEMENT_COLORS),
-        "elementColorFallback": ELEMENT_COLOR_FALLBACK,
     }
+    payload.update(_build_region_metadata(dataset))
+    return payload
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Single-star full-range model (model-full.fits)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def load_full_model(folder) -> dict:
+    """Load ``model-full.fits`` from a star's output folder.
+
+    Returns a dict with the keys ``flatten_full_spectrum`` needs (``wvl``,
+    ``flux``, ``fit``) plus ``error`` and ``fit_nomag`` for completeness. The
+    full-range FITS has HDUs ``WVL/FLUX/ERROR/FIT/FITNOMAG`` only — there is no
+    ``FLUXFIT``/``IDXTOFIT`` HDU (fitted regions are marked via the line list).
+    """
+    from astropy.io import fits
+
+    folder = Path(folder)
+    path = folder / "model-full.fits"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with fits.open(path) as h:
+        return {
+            "wvl": np.asarray(h["WVL"].data),
+            "flux": np.asarray(h["FLUX"].data),
+            "fit": np.asarray(h["FIT"].data),
+            "error": np.asarray(h["ERROR"].data),
+            "fit_nomag": (
+                np.asarray(h["FITNOMAG"].data) if "FITNOMAG" in h else None
+            ),
+        }
+
+
+def build_single_star_payload(fit_data: dict, base_dataset: dict) -> dict:
+    """Payload for a single star's full-range spectrum.
+
+    Same shape as ``build_spectrum_payload`` so ``spectrum.js`` consumes it
+    unchanged. Reuses ``flatten_full_spectrum`` (which drops non-finite pixels,
+    so the NaN red-edges from real-obs gaps vanish) to get sorted 1D arrays,
+    then supplies the obs/fit/resid arrays and λ-bounds alongside the
+    region/colour/threshold metadata derived from the base dataset.
+    """
+    flat = flatten_full_spectrum(fit_data)
+    if flat is None:
+        raise ValueError("empty/invalid full-range spectrum")
+    w, obs, fit = flat
+    resid = obs - fit
+    payload = {
+        "wavelengths": [float(x) for x in w],
+        "flux": [float(x) for x in obs],
+        "fitFlux": [float(x) for x in fit],
+        "resid": [round(float(x), 6) for x in resid],
+        "lambdaMin": float(w[0]),
+        "lambdaMax": float(w[-1]),
+        # Flag so spectrum.js resets the view to the full λ-range when a
+        # single-star payload arrives (the windowed mean view keeps its view).
+        "fullRange": True,
+    }
+    # reuse the region/colour/threshold metadata; this does NOT touch the
+    # mean-view arrays, so the base dataset need only carry ll_*/region_summary.
+    payload.update(_build_region_metadata(base_dataset))
+    return payload
+
+
+def build_single_star_vald_payload(spectrum_payload: dict, vald_entries: list) -> dict:
+    """VALD payload scoped to a single star's full-range spectrum.
+
+    Filters VALD to the payload's full λ-range and to the star's OWN observed
+    coverage (derived from the payload wavelengths, so genuine inter-order gaps
+    stay hidden) — crucially WITHOUT restricting to the fitted line-list
+    windows. This makes model-predicted lines outside the fitted regions
+    visible in the full-range view, instead of inheriting the mean view's
+    window-scoped VALD set.
+    """
+    from .vald import build_vald_payload
+
+    w = spectrum_payload.get("wavelengths") or []
+    if not w:
+        return build_vald_payload(vald_entries, lambda_min=0.0, lambda_max=0.0)
+    w_arr = np.asarray(w, dtype=float)
+    # compute_observed_ranges keys gap detection off the wavelength axis only;
+    # pass w for all three slots since obs/fit are unused there.
+    observed = compute_observed_ranges({"_": (w_arr, w_arr, w_arr)})
+    return build_vald_payload(
+        vald_entries,
+        lambda_min=float(spectrum_payload["lambdaMin"]),
+        lambda_max=float(spectrum_payload["lambdaMax"]),
+        observed_ranges=observed,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Teff-stack mode (stacked multi-star view)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def fitted_ranges_for_star(fit_data: dict) -> List[Tuple[float, float]]:
+    """Contiguous wavelength spans of the pixels this star actually fitted.
+
+    Derived from ``idxtofit``, so a region filtered out for this star (the
+    per-star filtering workflow) contributes no span. Reuses the gap
+    detection in ``compute_observed_ranges``.
+    """
+    wvl, idxtofit = fit_data["wvl"], fit_data["idxtofit"]
+    ws = []
+    for order in range(wvl.shape[0]):
+        pix = idxtofit[1][idxtofit[0] == order]
+        if len(pix):
+            ws.append(np.asarray(wvl[order])[pix] / 10.0)
+    if not ws:
+        return []
+    w = np.sort(np.concatenate(ws))
+    w = w[np.isfinite(w)]
+    if w.size < 2:
+        return []
+    return compute_observed_ranges({"_": (w, w, w)})
+
+
+def mask_to_ranges(
+    y: np.ndarray, common_w: np.ndarray, ranges: List[Tuple[float, float]]
+) -> np.ndarray:
+    """NaN out ``y`` at grid points outside every ``(lo, hi)`` range."""
+    keep = np.zeros(common_w.shape, dtype=bool)
+    for lo, hi in ranges:
+        keep |= (common_w >= lo) & (common_w <= hi)
+    out = np.asarray(y, dtype=float).copy()
+    out[~keep] = np.nan
+    return out
+
+
+def build_stacked_payload(dataset: dict, offset_step: float = 0.5) -> dict:
+    """Payload for the Teff-stack view (``stacked: true`` variant).
+
+    One obs/fit trace pair per star on the dataset's common grid, each
+    offset by ``i * offset_step`` with stars in Teff-ascending order
+    (coolest at offset 0). The fit trace spans the star's ENTIRE observed
+    range (fit-data.fits carries the model on every pixel, not just the
+    fitted windows); per-star region usage is conveyed by the tooltip's
+    ``perStar`` table instead. All non-finite values become None (strict
+    JSON). ``regions[i]["perStar"]`` carries each displayed star's χ²/N
+    and pixel count in trace order.
+    """
+    common_w = np.asarray(dataset["common_w"], dtype=float)
+    cache = dataset["fit_data_cache"]
+    teffs = dataset["stack_teffs"]  # slug -> Teff (K)
+    slugs = sorted(cache, key=lambda s: teffs.get(s, float("inf")))
+
+    def _vals(arr):
+        return [float(v) if np.isfinite(v) else None for v in arr]
+
+    stars = []
+    for slug in slugs:
+        if slug not in teffs:
+            continue
+        fd = cache[slug]
+        flat = flatten_full_spectrum(fd)
+        if flat is None:
+            continue
+        w, obs, fit = flat
+        oi = interp_to_common_grid(w, obs, common_w)
+        fi = interp_to_common_grid(w, fit, common_w)
+        stars.append(
+            {
+                "slug": slug,
+                "teff": float(teffs[slug]),
+                # len(stars) (not the loop index) so offsets stay
+                # consecutive even if a star is skipped above.
+                "offset": float(len(stars) * offset_step),
+                "flux": _vals(oi),
+                "fitFlux": _vals(fi),
+            }
+        )
+
+    payload = {
+        "stacked": True,
+        "offsetStep": float(offset_step),
+        "wavelengths": [float(v) for v in common_w],
+        "lambdaMin": float(common_w[0]),
+        "lambdaMax": float(common_w[-1]),
+        "stars": stars,
+    }
+    payload.update(_build_region_metadata(dataset))
+
+    star_order = [s["slug"] for s in stars]
+    for i, e in enumerate(dataset.get("ll_entries", [])):
+        per_star = []
+        for slug in star_order:
+            c2, npix = compute_region_chi2_for_star(
+                cache[slug], float(e["lower"]), float(e["upper"])
+            )
+            per_star.append(
+                {
+                    "chi2": float(c2) if np.isfinite(c2) else None,
+                    "npix": int(npix),
+                }
+            )
+        payload["regions"][i]["perStar"] = per_star
+    return payload
+
+
+def build_stacked_dataset(
+    retrievals_dir: Path,
+    suffix: str,
+    line_list_path: Optional[str],
+    grid_step_nm: float,
+    smooth_window: int,
+    vald_path: Optional[str] = None,
+    n_stack: int = 10,
+    offset_step: float = 0.5,
+) -> dict:
+    """Build the Teff-stack dataset: N even-Teff stars, stacked view.
+
+    Same shape as ``build_dataset`` restricted to the picked slugs (so
+    every existing callback works unchanged, with statistics scoped to
+    the displayed stars) plus ``stacked``, ``stack_teffs`` and
+    ``stacked_payload``. A picked star whose fit-data.fits fails to load
+    is substituted by the next-nearest-Teff unused candidate.
+    """
+    from .stack_select import select_stack_stars
+
+    found = discover_output_folders(retrievals_dir, suffix)
+    if not found:
+        raise RuntimeError(
+            f"No output folders for suffix '{suffix}' in {retrievals_dir}"
+        )
+    sel = select_stack_stars(found, n_stack)
+    for w in sel["warnings"]:
+        print(f"  ⚠ {w}")
+    if not sel["picked"]:
+        raise RuntimeError("No stars with a usable Teff in results.txt.")
+
+    # Verify each pick loads; substitute next-nearest-Teff on failure.
+    picked_slugs = {p["slug"] for p in sel["picked"]}
+    unused = [c for c in sel["candidates"] if c["slug"] not in picked_slugs]
+    final = []
+    for p in sel["picked"]:
+        cand = p
+        while cand is not None:
+            try:
+                load_fit_data(str(found[cand["slug"]]))
+                final.append(cand)
+                break
+            except Exception:
+                print(
+                    f"  ⚠ {cand['slug']}: fit-data.fits failed to load — "
+                    "substituting"
+                )
+                if unused:
+                    unused.sort(key=lambda c: abs(c["teff"] - p["teff"]))
+                    cand = unused.pop(0)
+                else:
+                    cand = None
+    if not final:
+        raise RuntimeError("No valid fit-data.fits loaded for the Teff stack.")
+
+    dataset = build_dataset(
+        retrievals_dir=retrievals_dir,
+        suffix=suffix,
+        line_list_path=line_list_path,
+        grid_step_nm=grid_step_nm,
+        smooth_window=smooth_window,
+        vald_path=vald_path,
+        only_slugs=[c["slug"] for c in final],
+    )
+    dataset["stacked"] = True
+    dataset["stack_teffs"] = {
+        c["slug"]: c["teff"]
+        for c in final
+        if c["slug"] in dataset["fit_data_cache"]
+    }
+    dataset["stacked_payload"] = build_stacked_payload(dataset, offset_step)
+    # Any "__mean__" restore in stacked mode must restore the stack.
+    dataset["mean_payload"] = dataset["stacked_payload"]
+    return dataset

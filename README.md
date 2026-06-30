@@ -102,6 +102,81 @@ python -m wave_explorer --help
 
 ---
 
+## Full-range single-star model (`model-full.fits`)
+
+By default the spectrum panel shows the **mean** observation/fit across all
+stars, restricted to the already-fitted line-list windows. To explore lines
+*outside* those windows for one star, use the **star selector** dropdown in the
+spectrum toolbar.
+
+### What it does
+
+- Picking a star focuses the plot on that single star and shows its ASAP model
+  spectrum over the **full observed wavelength range** (every echelle order),
+  not just the fitted windows. Selecting **"All stars (mean)"** restores the
+  mean view instantly.
+- The full-range model lives in `model-full.fits` in the star's `output_*`
+  folder, a sibling of `fit-data.fits`. HDUs: `WVL / FLUX / ERROR / FIT /
+  FITNOMAG` (2D, `n_orders × n_pix`). There is **no `FLUXFIT`/`IDXTOFIT` HDU** —
+  fitted regions are still marked via the line-list overlay, not via the FITS
+  (the PRIMARY header carries `FITMARK = linelist`). `FLUX` keeps the real-obs
+  NaNs; `FIT`/`FITNOMAG` are NaN wherever `FLUX` is NaN.
+
+### Auto-compute on focus + caching
+
+Focusing a star auto-computes `model-full.fits` if it is missing or older than
+the run's `results.txt`, then caches it next to `fit-data.fits`. Computation
+runs as a **subprocess** (the driver below) so ASAP + the model grid stay out of
+the Dash process; a small spinner appears in the toolbar while it runs.
+Re-selecting the same star is an instant cache hit. A cold compute reads a tiny
+"corner" grid (only the nodes bracketing the best-fit Teff/logg/[M/H]/[α/Fe])
+and runs `gen_spec` over the full orders — roughly a minute; subsequent loads
+are immediate.
+
+### Pre-warming from the CLI
+
+To compute the cache ahead of time (e.g. for a whole campaign), run the driver
+directly:
+
+```bash
+# writes model-full.fits into the star's output folder (skips if cache is fresh)
+conda run -n asap python -m wave_explorer.full_model \
+    06_retrievals/<star>/output_<star>_<suffix>
+
+# force recompute even if a fresh cache exists
+conda run -n asap python -m wave_explorer.full_model <output_folder> --force
+
+# write the cache to a separate directory instead of the output folder
+# (useful when the output folder is read-only); filename is
+# <star>_model-full.fits in that dir
+conda run -n asap python -m wave_explorer.full_model <output_folder> \
+    --cache-dir /scratch/full_models
+
+# override the model grid path (the config's pathToGrid can be stale)
+conda run -n asap python -m wave_explorer.full_model <output_folder> \
+    --grid-path /net/vdesk/data2/cobelens/MRP/new/grid_models/hdf5-narval-full/
+```
+
+Cache validity is mtime-based: the cache is reused when it is newer than the
+run's `results.txt`, unless `--force` is given.
+
+### Driver design note (from the verification spike)
+
+The driver (`wave_explorer/full_model/`) reuses ASAP's **unmodified** `gen_spec`.
+Instead of the full grid it loads a 2×2×2×2 "corner" sliced to the nodes
+bracketing the best-fit atmospheric parameters — verified **bit-identical**
+(max abs diff 0.0) to the full-grid model, because the interpolator only ever
+touches the bracketing nodes. `load_obs` returns 2D per-order arrays
+`(n_orders, n_pix)`, so "full-order regions" are just those rows directly (no
+order discovery needed). The corner load reuses ASAP's own `load_grid` against a
+temp dir that symlinks only the bracketing grid files, so ASAP builds `grid_n`
+in the correct dimension order itself. The built-in oracle test
+(`full_model/tests/test_driver_oracle.py`) gates correctness: the full-range
+model, restricted back to the fitted windows, must match `fit-data.fits` `FIT`.
+See `wave_explorer/full_model/SPIKE_findings.md` for the full evidence.
+
+---
+
 ## Architecture Decisions
 
 ### 1. CSS via Custom Properties
