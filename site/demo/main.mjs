@@ -225,6 +225,19 @@ export function syncSpectrum(goto = null) {
   );
 }
 
+// Window [lo, hi] (nm) around the left-most region, with a little context, used
+// to zoom a single-star view to one region instead of the whole 730-1000 nm range.
+function firstRegionWindow() {
+  let best = null;
+  for (const e of state.llEntries) {
+    const lo = Number(e.lower), hi = Number(e.upper);
+    if (best == null || lo < best.lo) best = { lo, hi };
+  }
+  if (best == null) return null;
+  const pad = 0.5;   // nm of context on each side
+  return [best.lo - pad, best.hi + pad];
+}
+
 async function loadView(viewId) {
   if (!state.specByView[viewId]) {
     const v = state.manifest.views.find((x) => x.id === viewId);
@@ -233,6 +246,13 @@ async function loadView(viewId) {
   }
   state.view = viewId;
   syncSpectrum();      // spectrum.js resets to full λ-range when payload has fullRange:true
+  // For a single-star full-range view, zoom straight into the first region so
+  // buildPath only renders that window's points (spectrum.js culls to the view)
+  // — much smoother than drawing the whole 730-1000 nm range at once.
+  if (viewId !== "__mean__" && window.WaveExplorer && window.WaveExplorer.setView) {
+    const win = firstRegionWindow();
+    if (win) window.WaveExplorer.setView(win[0], win[1]);
+  }
 }
 
 document.getElementById("star-select").addEventListener("change", (ev) => {
