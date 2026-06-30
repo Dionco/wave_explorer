@@ -58,6 +58,7 @@ async function renderSelectedStats() {
   const c = customRegionChi2(state.meta.fitpix, lo, hi);
   const rs = residualMetrics(state.meta.common_w, state.meta.mean_resid, state.meta.std_resid, lo, hi);
   if (!Number.isFinite(c.median_chi2)) {
+    document.getElementById("chi2-histogram").innerHTML = "";
     statsEl.innerHTML = `<div style="font-family:monospace;font-size:11px;color:#75705f">λ  ${lo.toFixed(3)} – ${hi.toFixed(3)} nm</div>`
       + `<div style="color:#9c9684;margin-top:8px;font-size:13px">No fitted pixels in this interval.</div>`;
     rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm  ·  no fitted pixels`;
@@ -125,6 +126,7 @@ async function renderCustomStats(lo, hi) {
   const statsEl = document.getElementById("candidate-stats");
   const rangeEl = document.getElementById("status-range");
   if (!Number.isFinite(c.median_chi2)) {
+    document.getElementById("chi2-histogram").innerHTML = "";
     statsEl.innerHTML = `<div style="color:#9c9684;font-size:13px">No fitted pixels in the drawn interval.</div>`;
     rangeEl.textContent = `${lo.toFixed(3)} – ${hi.toFixed(3)} nm · no fitted pixels`;
     return;

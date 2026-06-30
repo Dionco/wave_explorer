@@ -7,7 +7,7 @@ A fully interactive, server-free demo runs on preloaded `ds_leo` data at
 
 To rebuild the demo, you need the `asap` env, spectroscopy data, and model grid on your machine. From `new/obs-data-example`:
 
-    /net/vdesk/data2/cobelens/.conda/envs/asap/bin/python -m scripts.export_demo \
+    /net/vdesk/data2/cobelens/.conda/envs/asap/bin/python -m wave_explorer.scripts.export_demo \
         --built-at "$(date +%F)" \
         --grid-path /net/vdesk/data2/cobelens/MRP/new/grid_models/hdf5-narval-full/
     node --test wave_explorer/tests/demo_compute.test.mjs   # parity gate

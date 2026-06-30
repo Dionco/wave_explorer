@@ -3,7 +3,6 @@ import { C, chi2Color, chi2Label, chi2Tier, chi2Pct, fmt } from "./theme.mjs";
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const ROMAN = { "1": "I", "2": "II", "3": "III", "4": "IV", "5": "V" };
 
 export function buildHistogram(values, subtitle, unit = "region") {
   const binW = 2.0, nBins = 22;
