@@ -53,9 +53,13 @@
 
   var interaction = null;    // active gesture (mutable during a drag)
   var rafPending = false;
+  var rafDynPending = false; // pending lightweight (hover-layer) update
   var viewChangeCbs = [];
   var svgEl = null;
+  var dynamicLayer = null;   // crosshair / hover-outline / draw-preview layer
+  var rectCache = null;      // per-frame getBoundingClientRect cache
   var lastGotoTick = null;   // last goto-region-store tick acted on
+  var lastPayloadFp = null;  // fingerprint of the last spectrum payload
 
   // ── Quality coding ───────────────────────────────────────────────────────
   function qualityTier(c2) {
@@ -129,12 +133,10 @@
     if (!vald || !vald.wavelengths || !valdVisible) return [];
     var w = vald.wavelengths;
     var hits = [];
-    for (var i = 0; i < w.length; i++) {
+    for (var i = lowerBound(w, lambda - halfWidthNm); i < w.length; i++) {
+      if (w[i] - lambda > halfWidthNm) break;  // sorted → can short-circuit
       if (vald.depths[i] < valdDepthMin) continue;
-      var dl = w[i] - lambda;
-      if (dl < -halfWidthNm) continue;
-      if (dl > halfWidthNm) break;  // sorted → can short-circuit
-      hits.push({ idx: i, dist: Math.abs(dl) });
+      hits.push({ idx: i, dist: Math.abs(w[i] - lambda) });
     }
     hits.sort(function (a, b) { return a.dist - b.dist; });
     return hits.slice(0, maxRows);
@@ -158,16 +160,34 @@
 
   function clampView(nmin, nmax) {
     var lo = data.lambdaMin, hi = data.lambdaMax;
-    var maxSpan = hi - lo;
+    var EPS = 1e-6;
+    // Reject non-finite inputs (e.g. NaN from a zero-width heatstrip drag):
+    // keep the current view instead of poisoning the scales.
+    if (!isFinite(nmin) || !isFinite(nmax)) {
+      return view || { min: lo, max: Math.max(hi, lo + EPS) };
+    }
+    // Degenerate data domain (lambdaMin === lambdaMax) → force a tiny span
+    // so xScale never divides by zero.
+    var maxSpan = Math.max(hi - lo, EPS);
     var span = nmax - nmin;
     if (span < MIN_SPAN) {
       var c = (nmin + nmax) / 2;
       nmin = c - MIN_SPAN / 2; nmax = c + MIN_SPAN / 2; span = MIN_SPAN;
     }
-    if (span > maxSpan) return { min: lo, max: hi };
+    if (span >= maxSpan) return { min: lo, max: Math.max(hi, lo + EPS) };
     if (nmin < lo) { nmax += lo - nmin; nmin = lo; }
     if (nmax > hi) { nmin -= nmax - hi; nmax = hi; }
     return { min: nmin, max: nmax };
+  }
+
+  // Smallest index i in sorted-ascending array `w` with w[i] >= x.
+  function lowerBound(w, x) {
+    var lo = 0, hi = w.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (w[mid] < x) lo = mid + 1; else hi = mid;
+    }
+    return lo;
   }
 
   // Nearest index in the sorted-ascending `data.wavelengths` to `lambda`,
@@ -191,13 +211,26 @@
     return data[key][nearestIndex(lambda)];
   }
 
+  // Inclusive index range [i0, i1] of data.wavelengths inside [loLam, hiLam]
+  // (binary search — replaces per-frame O(N) scans). Empty range → i1 < i0.
+  function viewIndexRange(loLam, hiLam) {
+    var w = data.wavelengths, n = w.length;
+    if (!n || hiLam < w[0] || loLam > w[n - 1]) return { i0: 0, i1: -1 };
+    var i0 = nearestIndex(loLam);
+    if (w[i0] < loLam) i0++;
+    var i1 = nearestIndex(hiLam);
+    if (w[i1] > hiLam) i1--;
+    return { i0: i0, i1: i1 };
+  }
+
   // ── Path building ────────────────────────────────────────────────────────
   function buildPath(arr, yFn, offset) {
     var w = data.wavelengths, d = "", started = false;
     var off = offset || 0;
-    for (var i = 0; i < w.length; i++) {
-      if (w[i] < view.min - 0.05 || w[i] > view.max + 0.05) continue;
+    var rng = viewIndexRange(view.min - 0.05, view.max + 0.05);
+    for (var i = rng.i0; i <= rng.i1; i++) {
       var v = arr[i];
+      // Non-finite / null samples are gaps → break the path (new M next).
       if (v == null || !isFinite(v)) { started = false; continue; }
       var x = xScale(w[i]).toFixed(2), y = yFn(v + off).toFixed(2);
       d += (started ? "L" : "M") + x + "," + y;
@@ -213,8 +246,11 @@
     else if (span < 12) step = 1;
     else if (span < 25) step = 2;
     else step = 5;
+    // Index-based loop — `t += step` accumulates FP error and can drop the
+    // final tick when start + k*step lands a hair above view.max.
     var arr = [], start = Math.ceil(view.min / step) * step;
-    for (var t = start; t <= view.max; t += step) arr.push(t);
+    var count = Math.floor((view.max - start) / step + 1e-9) + 1;
+    for (var i = 0; i < count; i++) arr.push(start + i * step);
     return { arr: arr, step: step };
   }
 
@@ -230,19 +266,8 @@
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
-  function render() {
-    var h = host();
-    if (!h || !data || !view) return;
-    if (!svgEl) {
-      svgEl = el("svg", {
-        class: "spectrum-svg",
-        viewBox: "0 0 " + PLOT_W + " " + PLOT_H,
-        preserveAspectRatio: "none",
-      });
-      svgEl.style.touchAction = "none";
-      h.appendChild(svgEl);
-      bindPointer();
-    }
+  function updateSvgClass() {
+    if (!svgEl) return;
     svgEl.setAttribute(
       "class",
       "spectrum-svg" +
@@ -253,12 +278,55 @@
           ? " drawing"
           : "")
     );
+  }
+
+  function render() {
+    var h = host();
+    if (!h || !data || !view) return;
+    // Dash re-rendered #spectrum-graph → our svg node is detached; drop the
+    // stale reference so the plot is re-created (and handlers re-bound).
+    if (svgEl && (!svgEl.isConnected || svgEl.parentNode !== h)) {
+      svgEl = null;
+      dynamicLayer = null;
+    }
+    if (!svgEl) {
+      svgEl = el("svg", {
+        class: "spectrum-svg",
+        viewBox: "0 0 " + PLOT_W + " " + PLOT_H,
+        preserveAspectRatio: "none",
+      });
+      svgEl.style.touchAction = "none";
+      h.appendChild(svgEl);
+      bindPointer();
+    }
+    updateSvgClass();
 
     var tk = ticks();
     var stk = !!(data && data.stacked);
     var fluxTicks = niceTicks(fluxRange.min, fluxRange.max, stk ? 9 : 5);
     var residTicks = [-residMax * 0.66, 0, residMax * 0.66];
     var parts = [];
+
+    // clip paths — keep out-of-range paths from spilling across panels
+    var defs = el("defs", {});
+    var cpMain = el("clipPath", { id: "we-clip-main" });
+    cpMain.appendChild(el("rect", {
+      x: PAD.left, y: MAIN.top, width: innerW, height: MAIN.h,
+    }));
+    defs.appendChild(cpMain);
+    var cpResid = el("clipPath", { id: "we-clip-resid" });
+    cpResid.appendChild(el("rect", {
+      x: PAD.left, y: RESID.top, width: innerW, height: RESID.h,
+    }));
+    defs.appendChild(cpResid);
+    // whole plot area, with a little y-padding for the selection glow
+    var cpPlot = el("clipPath", { id: "we-clip-plot" });
+    cpPlot.appendChild(el("rect", {
+      x: PAD.left, y: MAIN.top - 4, width: innerW,
+      height: fullBottom - MAIN.top + 8,
+    }));
+    defs.appendChild(cpPlot);
+    parts.push(defs);
 
     // backgrounds
     parts.push(rect(PAD.left, MAIN.top, innerW, MAIN.h, "var(--paper)"));
@@ -306,33 +374,28 @@
     }
 
     // region bands
-    parts.push(renderRegions());
+    var regionsG = renderRegions();
+    regionsG.setAttribute("clip-path", "url(#we-clip-plot)");
+    parts.push(regionsG);
 
     // VALD line overlay (vertical dashed markers, below data lines so they
     // do not occlude the obs/fit curves)
-    parts.push(renderVald());
+    var valdG = renderVald();
+    valdG.setAttribute("clip-path", "url(#we-clip-plot)");
+    parts.push(valdG);
 
-    // draw-in-progress preview
-    if (interaction && interaction.kind === "draw" && interaction.preview) {
-      var p = interaction.preview;
-      var dx1 = xScale(Math.min(p.x0, p.x1)), dx2 = xScale(Math.max(p.x0, p.x1));
-      parts.push(el("rect", {
-        x: dx1, y: MAIN.top, width: Math.max(1, dx2 - dx1),
-        height: fullBottom - MAIN.top, fill: "rgba(179,85,59,0.18)",
-        stroke: "var(--accent)", "stroke-width": 1.5, "stroke-dasharray": "4 3",
-      }));
-    }
-
-    // data lines
+    // data lines — clipped to their panels
+    var mainG = el("g", { "clip-path": "url(#we-clip-main)" });
+    var residG = el("g", { "clip-path": "url(#we-clip-resid)" });
     if (stk) {
       data.stars.forEach(function (s, k) {
         var hov = hoveredStar === k;
-        parts.push(el("path", {
+        mainG.appendChild(el("path", {
           class: "obs-line",
           d: buildPath(s.flux, yMain, s.offset),
           style: hov ? "opacity:1;stroke-width:1.5" : null,
         }));
-        parts.push(el("path", {
+        mainG.appendChild(el("path", {
           class: "fit-line",
           d: buildPath(s.fitFlux, yMain, s.offset),
           style: "stroke:" + teffColor(s.teff) +
@@ -341,40 +404,33 @@
       });
       // pinned star labels at the left edge
       data.stars.forEach(function (s) {
-        parts.push(el("text", {
+        mainG.appendChild(el("text", {
           class: "star-label",
           x: PAD.left + 8,
           y: yMain(1.0 + s.offset) - 6,
           fill: teffColor(s.teff),
         }, s.slug + " · " + Math.round(s.teff) + " K"));
       });
+      parts.push(mainG);
     } else {
-      parts.push(el("path", { class: "obs-line", d: buildPath(data.flux, yMain) }));
-      parts.push(el("path", { class: "fit-line", d: buildPath(data.fitFlux, yMain) }));
-      parts.push(el("path", { class: "resid-line", d: buildPath(data.resid, yResid) }));
+      mainG.appendChild(el("path", { class: "obs-line", d: buildPath(data.flux, yMain) }));
+      mainG.appendChild(el("path", { class: "fit-line", d: buildPath(data.fitFlux, yMain) }));
+      residG.appendChild(el("path", { class: "resid-line", d: buildPath(data.resid, yResid) }));
 
       // residual outlier dots
-      var dots = el("g", {});
       var w = data.wavelengths, rd = data.resid;
-      for (var i = 0; i < w.length; i++) {
-        if (w[i] < view.min || w[i] > view.max) continue;
-        if (rd[i] != null && Math.abs(rd[i]) > residMax * 0.55) {
-          dots.appendChild(el("circle", {
+      var rng = viewIndexRange(view.min, view.max);
+      for (var i = rng.i0; i <= rng.i1; i++) {
+        if (rd[i] != null && isFinite(rd[i]) &&
+            Math.abs(rd[i]) > residMax * 0.55) {
+          residG.appendChild(el("circle", {
             cx: xScale(w[i]), cy: yResid(rd[i]), r: 1.6,
             fill: rd[i] > 0 ? "var(--accent)" : "var(--ink)", opacity: 0.7,
           }));
         }
       }
-      parts.push(dots);
-    }
-
-    // cursor crosshair
-    if (cursorPx != null && cursorPx > PAD.left && cursorPx < PAD.left + innerW) {
-      parts.push(el("line", {
-        x1: cursorPx, x2: cursorPx, y1: MAIN.top, y2: fullBottom,
-        stroke: "var(--ink)", "stroke-width": 0.6, "stroke-dasharray": "2 3",
-        opacity: 0.35, "pointer-events": "none",
-      }));
+      parts.push(mainG);
+      parts.push(residG);
     }
 
     // axes
@@ -383,6 +439,59 @@
     // commit
     svgEl.textContent = "";
     parts.forEach(function (n) { svgEl.appendChild(n); });
+
+    // lightweight top layer: crosshair, hover outline, draw preview.
+    // Rebuilt by updateDynamic() on pointermove without a full re-render.
+    dynamicLayer = el("g", {
+      class: "spectrum-dynamic",
+      "pointer-events": "none",
+      "clip-path": "url(#we-clip-plot)",
+    });
+    svgEl.appendChild(dynamicLayer);
+    updateDynamic();
+  }
+
+  // ── Lightweight hover layer (no full rebuild on pointermove) ────────────
+  function updateDynamic() {
+    if (!svgEl || !dynamicLayer || !data || !view) return;
+    updateSvgClass();
+    dynamicLayer.textContent = "";
+
+    // draw-in-progress preview
+    if (interaction && interaction.kind === "draw" && interaction.preview) {
+      var p = interaction.preview;
+      var dx1 = xScale(Math.min(p.x0, p.x1)), dx2 = xScale(Math.max(p.x0, p.x1));
+      dynamicLayer.appendChild(el("rect", {
+        x: dx1, y: MAIN.top, width: Math.max(1, dx2 - dx1),
+        height: fullBottom - MAIN.top, fill: "rgba(179,85,59,0.18)",
+        stroke: "var(--accent)", "stroke-width": 1.5, "stroke-dasharray": "4 3",
+      }));
+    }
+
+    // hovered-region outline (selected region keeps its glow in renderRegions)
+    if (hoveredIdx != null && hoveredIdx !== selectedIdx) {
+      var r = effRegion(hoveredIdx);
+      if (r && !(r.upper < view.min || r.lower > view.max)) {
+        var hx1 = xScale(r.lower), hx2 = xScale(r.upper);
+        var c2 = regionChi2(hoveredIdx);
+        var stroke = r.excluded
+          ? "rgba(156,61,46,0.5)" : Q_COLOR[qualityTier(c2)];
+        dynamicLayer.appendChild(el("rect", {
+          x: hx1 - 1, y: MAIN.top, width: hx2 - hx1 + 2,
+          height: fullBottom - MAIN.top, fill: "none", stroke: stroke,
+          "stroke-width": 1.5, opacity: 0.6,
+        }));
+      }
+    }
+
+    // cursor crosshair
+    if (cursorPx != null && cursorPx > PAD.left && cursorPx < PAD.left + innerW) {
+      dynamicLayer.appendChild(el("line", {
+        x1: cursorPx, x2: cursorPx, y1: MAIN.top, y2: fullBottom,
+        stroke: "var(--ink)", "stroke-width": 0.6, "stroke-dasharray": "2 3",
+        opacity: 0.35,
+      }));
+    }
   }
 
   function rect(x, y, w, h, fill) {
@@ -405,7 +514,6 @@
       var fill = r.excluded ? "rgba(156,61,46,0.07)" : Q_FILL[tier];
       var stroke = r.excluded ? "rgba(156,61,46,0.5)" : Q_COLOR[tier];
       var isSel = i === selectedIdx;
-      var isHov = i === hoveredIdx;
       var dim = selectedIdx != null && !isSel;
 
       var rg = el("g", { class: "region-band" + (dim ? " dim" : "") });
@@ -442,18 +550,12 @@
           x: x1, y: MAIN.top + 4, width: bw, height: 2, fill: "var(--accent)",
         }));
       }
-      // selection glow
+      // selection glow (the hover outline lives in the dynamic layer)
       if (isSel) {
         rg.appendChild(el("rect", {
           x: x1 - 2, y: MAIN.top - 2, width: x2 - x1 + 4,
           height: fullBottom - MAIN.top + 4, rx: 3, fill: "none",
           stroke: "var(--accent)", "stroke-width": 2, opacity: 0.85,
-        }));
-      } else if (isHov) {
-        rg.appendChild(el("rect", {
-          x: x1 - 1, y: MAIN.top, width: x2 - x1 + 2,
-          height: fullBottom - MAIN.top, fill: "none", stroke: stroke,
-          "stroke-width": 1.5, opacity: 0.6,
         }));
       }
       // edge handles — only on the selected region
@@ -494,9 +596,9 @@
     var lastLabelPx = -Infinity;
     var topY = MAIN.top + 4;
     var botY = MAIN.top + MAIN.h;
-    for (var i = 0; i < w.length; i++) {
+    for (var i = lowerBound(w, view.min); i < w.length; i++) {
       var lam = w[i];
-      if (lam < view.min || lam > view.max) continue;
+      if (lam > view.max) break;
       if (vald.depths[i] < valdDepthMin) continue;
       var x = xScale(lam);
       var col = elementColor(vald.elements[i]);
@@ -622,9 +724,30 @@
     });
   }
 
+  // Hover-only updates: refresh just the dynamic layer. A pending full
+  // render supersedes this (render() ends with updateDynamic()).
+  function scheduleDynamic() {
+    if (rafPending || rafDynPending) return;
+    rafDynPending = true;
+    window.requestAnimationFrame(function () {
+      rafDynPending = false;
+      if (!rafPending) updateDynamic();
+    });
+  }
+
   // ── Pointer interaction ──────────────────────────────────────────────────
+  // getBoundingClientRect is layout-forcing — cache it for the current
+  // animation frame instead of reading it up to 3× per pointermove.
+  function svgRect() {
+    if (!rectCache) {
+      rectCache = svgEl.getBoundingClientRect();
+      window.requestAnimationFrame(function () { rectCache = null; });
+    }
+    return rectCache;
+  }
+
   function svgCoords(e) {
-    var rect = svgEl.getBoundingClientRect();
+    var rect = svgRect();
     var px = ((e.clientX - rect.left) / rect.width) * PLOT_W;
     var py = ((e.clientY - rect.top) / rect.height) * PLOT_H;
     return { px: px, py: py, lambda: xInvert(px),
@@ -638,12 +761,15 @@
     svgEl.addEventListener("pointercancel", onCancel);
     svgEl.addEventListener("pointerleave", onLeave);
     svgEl.addEventListener("wheel", onWheel, { passive: false });
+    svgEl.addEventListener("dblclick", onDblClick);
   }
 
   function onDown(e) {
     if (e.button !== 0) return;
+    // A second pointer must not clobber an active gesture.
+    if (interaction && interaction.pointerId !== e.pointerId) return;
     var p = svgCoords(e);
-    svgEl.setPointerCapture(e.pointerId);
+    try { svgEl.setPointerCapture(e.pointerId); } catch (_) {}
 
     if (drawMode) {
       interaction = { kind: "draw", startLambda: p.lambda,
@@ -669,31 +795,33 @@
   }
 
   function onMove(e) {
-    var p = svgCoords(e);
-    cursorPx = p.px;
     var it = interaction;
+    // Ignore pointers that don't own the active gesture (multi-touch).
+    if (it && e.pointerId !== it.pointerId) return;
+    var p = svgCoords(e);
+    if (!isFinite(p.lambda)) return; // zero-size svg → coords are NaN
+    cursorPx = p.px;
 
     if (it && it.kind === "edge") {
       var lo = it.originalLo, hi = it.originalHi;
       if (it.edge === "lo") lo = Math.min(p.lambda, hi - MIN_REGION_W);
       else hi = Math.max(p.lambda, lo + MIN_REGION_W);
       stageEdgePreview(it.regionIdx, lo, hi);
-      scheduleRender();
+      scheduleRender(); // band geometry changes → full render (view-culled)
       return;
     }
     if (it && it.kind === "draw") {
       it.preview = { x0: it.startLambda, x1: p.lambda };
-      scheduleRender();
+      scheduleDynamic();
       return;
     }
     if (it && it.kind === "pan") {
       var dxPx = e.clientX - it.startClientX;
+      var dxSvg = (dxPx / svgRect().width) * PLOT_W;
       if (!it.activated) {
-        var dxSvgGate = (dxPx / svgEl.getBoundingClientRect().width) * PLOT_W;
-        if (Math.abs(dxSvgGate) < DRAG_THRESHOLD) return;
+        if (Math.abs(dxSvg) < DRAG_THRESHOLD) return;
         it.activated = true;
       }
-      var dxSvg = (dxPx / svgEl.getBoundingClientRect().width) * PLOT_W;
       var span = it.viewMax - it.viewMin;
       var dLambda = -(dxSvg / innerW) * span;
       view = clampView(it.viewMin + dLambda, it.viewMax + dLambda);
@@ -702,16 +830,23 @@
       return;
     }
 
-    // hover
-    var hit = hitRegion(p.lambda);
-    hoveredIdx = hit;
-    if (data && data.stacked) hoveredStar = nearestStar(p.lambda, p.py);
+    // hover — only the lightweight dynamic layer + tooltip update; a full
+    // rebuild is needed solely when the stacked-star emphasis changes.
+    var starChanged = false;
+    if (data && data.stacked) {
+      var ns = nearestStar(p.lambda, p.py);
+      starChanged = ns !== hoveredStar;
+      hoveredStar = ns;
+    }
+    hoveredIdx = hitRegion(p.lambda);
     updateTooltip(p);
-    scheduleRender();
+    if (starChanged) scheduleRender();
+    else scheduleDynamic();
   }
 
   function onUp(e) {
     var it = interaction;
+    if (it && e.pointerId !== it.pointerId) return; // stray pointer
     try { svgEl.releasePointerCapture(e.pointerId); } catch (_) {}
 
     if (it && it.kind === "edge") {
@@ -729,9 +864,16 @@
       var p = svgCoords(e);
       var lo = Math.min(it.startLambda, p.lambda);
       var hi = Math.max(it.startLambda, p.lambda);
+      // clamp to the data domain — the pointer can be released off-plot
+      lo = Math.max(lo, data.lambdaMin);
+      hi = Math.min(hi, data.lambdaMax);
       interaction = null;
-      if (hi - lo > 0.01) openDrawPopover(lo, hi, e.clientX, e.clientY);
-      else scheduleRender();
+      if (isFinite(lo) && isFinite(hi) && hi - lo > 0.01) {
+        openDrawPopover(lo, hi, e.clientX, e.clientY);
+        scheduleDynamic(); // clear the preview rect
+      } else {
+        scheduleRender();
+      }
       return;
     }
     if (it && it.kind === "pan") {
@@ -747,6 +889,7 @@
   }
 
   function onCancel(e) {
+    if (interaction && e.pointerId !== interaction.pointerId) return;
     try { svgEl.releasePointerCapture(e.pointerId); } catch (_) {}
     interaction = null;
     scheduleRender();
@@ -756,14 +899,28 @@
     if (interaction) return;
     cursorPx = null;
     hoveredIdx = null;
+    var starChanged = hoveredStar != null;
     hoveredStar = null;
     hideTooltip();
+    if (starChanged) scheduleRender();
+    else scheduleDynamic();
+  }
+
+  // Toolbar promise: "double-click resets" → back to the full λ-range.
+  function onDblClick(e) {
+    if (!data || !view) return;
+    e.preventDefault();
+    interaction = null;
+    view = clampView(data.lambdaMin, data.lambdaMax);
+    emitViewChange();
     scheduleRender();
   }
 
   function onWheel(e) {
+    if (e.deltaY === 0) return; // horizontal/idle wheel — not a zoom gesture
     e.preventDefault();
     var p = svgCoords(e);
+    if (!isFinite(p.lambda)) return;
     var factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
     var span = view.max - view.min;
     var newSpan = Math.max(MIN_SPAN,
@@ -805,9 +962,43 @@
   }
 
   // ── Tooltip ──────────────────────────────────────────────────────────────
+  var tipRafPending = false;
+  var tipPoint = null;
+  var lastTipHTML = "";
+
+  // Format a possibly-null/NaN sample; gaps render as an en-dash.
+  function fmtNum(v, digits, signed) {
+    if (v == null || !isFinite(v)) return "–";
+    var s = v.toFixed(digits);
+    return signed && v >= 0 ? "+" + s : s;
+  }
+
+  // rAF-batched (latest-wins): raw pointermove can fire faster than the
+  // display refresh, and innerHTML is only rewritten when content changed.
   function updateTooltip(p) {
+    tipPoint = p;
+    if (tipRafPending) return;
+    tipRafPending = true;
+    window.requestAnimationFrame(function () {
+      tipRafPending = false;
+      renderTooltip();
+    });
+  }
+
+  function commitTooltip(tip, html, p) {
+    if (html !== lastTipHTML) {
+      tip.innerHTML = html;
+      lastTipHTML = html;
+    }
+    tip.style.display = "block";
+    tip.style.left = (p.clientX + 16) + "px";
+    tip.style.top = (p.clientY + 16) + "px";
+  }
+
+  function renderTooltip() {
+    var p = tipPoint;
     var tip = document.getElementById("cursor-tooltip");
-    if (!tip || !data) return;
+    if (!tip || !data || !p) return;
     var cl = p.lambda;
 
     if (data.stacked) {
@@ -818,9 +1009,9 @@
       var html =
         '<div class="tt-title"><span>' + s.slug + "</span><span>" +
         Math.round(s.teff) + " K</span></div>" +
-        ttRow("cursor λ", cl.toFixed(3)) +
-        ttRow("obs flux", ov != null && isFinite(ov) ? ov.toFixed(4) : "—") +
-        ttRow("fit", fv != null && isFinite(fv) ? fv.toFixed(4) : "—");
+        ttRow("cursor λ", fmtNum(cl, 3)) +
+        ttRow("obs flux", fmtNum(ov, 4)) +
+        ttRow("fit", fmtNum(fv, 4));
 
       if (hoveredIdx != null) {
         var r = effRegion(hoveredIdx), c2 = regionChi2(hoveredIdx);
@@ -861,10 +1052,7 @@
           );
         }
       }
-      tip.innerHTML = html + vh;
-      tip.style.display = "block";
-      tip.style.left = (p.clientX + 16) + "px";
-      tip.style.top = (p.clientY + 16) + "px";
+      commitTooltip(tip, html + vh, p);
       return;
     }
 
@@ -899,21 +1087,21 @@
         valdHtml += ttRow(lab + " @ " + lamS, "d=" + dpS);
       }
     }
-    tip.innerHTML = head +
-      ttRow("cursor λ", cl.toFixed(3)) +
-      ttRow("obs flux", sampleAt("flux", cl).toFixed(4)) +
-      ttRow("fit", sampleAt("fitFlux", cl).toFixed(4)) +
-      ttRow("resid", (resid >= 0 ? "+" : "") + resid.toFixed(4)) +
+    var html = head +
+      ttRow("cursor λ", fmtNum(cl, 3)) +
+      ttRow("obs flux", fmtNum(sampleAt("flux", cl), 4)) +
+      ttRow("fit", fmtNum(sampleAt("fitFlux", cl), 4)) +
+      ttRow("resid", fmtNum(resid, 4, true)) +
       valdHtml;
-    tip.style.display = "block";
-    tip.style.left = (p.clientX + 16) + "px";
-    tip.style.top = (p.clientY + 16) + "px";
+    commitTooltip(tip, html, p);
   }
   function ttRow(k, v) {
     return '<div class="tt-row"><span>' + k + "</span><span>" + v +
       "</span></div>";
   }
   function hideTooltip() {
+    tipPoint = null;
+    lastTipHTML = "";
     var tip = document.getElementById("cursor-tooltip");
     if (tip) tip.style.display = "none";
   }
@@ -982,13 +1170,29 @@
   }
 
   // ── Public sync entry — called by the Dash clientside callback ───────────
+  // Content fingerprint of a spectrum payload — object identity is not
+  // reliable across Dash callback invocations (a fresh-but-equal reference
+  // must NOT reset the user's zoom; a genuinely new payload must rescale).
+  function payloadFp(d) {
+    var fp = d.lambdaMin + "|" + d.lambdaMax + "|" +
+      (d.wavelengths ? d.wavelengths.length : 0) +
+      (d.fullRange ? "|F" : "") + (d.stacked ? "|S" : "");
+    if (d.stacked && d.stars) {
+      fp += "|" + d.stars.map(function (s) { return s.slug; }).join(",");
+    } else if (d.flux && d.flux.length) {
+      fp += "|" + d.flux[0] + "|" + d.flux[d.flux.length >> 1];
+    }
+    return fp;
+  }
+
   function sync(specData, entries, pending, selected, drawActive, goto,
                 valdPayload, visible, depthMin) {
     var firstData = false;
     var newData = false;
     if (specData && specData.wavelengths) {
       if (!data) firstData = true;
-      if (specData !== data) newData = true;
+      var fp = payloadFp(specData);
+      if (fp !== lastPayloadFp) { newData = true; lastPayloadFp = fp; }
       data = specData;
     }
     if (!data) return;
@@ -1011,33 +1215,50 @@
             }
           }
         });
-        if (!isFinite(fmin)) { fmin = 0; fmax = 1; }
       } else {
+        // Skip null/NaN samples (payload gaps) — Math.min/max would
+        // poison the scale with NaN (and coerce null to 0).
         for (var i = 0; i < data.flux.length; i++) {
-          fmin = Math.min(fmin, data.flux[i], data.fitFlux[i]);
-          fmax = Math.max(fmax, data.flux[i], data.fitFlux[i]);
-          rmax = Math.max(rmax, Math.abs(data.resid[i]));
+          var o2 = data.flux[i], f2 = data.fitFlux[i], r2 = data.resid[i];
+          if (o2 != null && isFinite(o2)) {
+            if (o2 < fmin) fmin = o2;
+            if (o2 > fmax) fmax = o2;
+          }
+          if (f2 != null && isFinite(f2)) {
+            if (f2 < fmin) fmin = f2;
+            if (f2 > fmax) fmax = f2;
+          }
+          if (r2 != null && isFinite(r2)) {
+            var a2 = Math.abs(r2);
+            if (a2 > rmax) rmax = a2;
+          }
         }
       }
+      if (!isFinite(fmin) || !isFinite(fmax)) { fmin = 0; fmax = 1; }
       var fpad = 0.04 * (fmax - fmin || 1);
       fluxRange = { min: fmin - fpad, max: fmax + fpad };
       residMax = Math.max(0.01, rmax * 1.15);
       // On first load, or when a single-star full-range payload arrives, reset
       // the x-domain to the payload bounds so the whole range is reachable. The
       // windowed mean view (no fullRange flag, not first load) keeps its view.
-      if (firstData || data.fullRange) {
-        view = { min: data.lambdaMin, max: data.lambdaMax };
-      } else if (view) {
+      if (!firstData && !data.fullRange && view) {
         // Keep the current window but re-clamp to the new payload bounds.
         view = clampView(view.min, view.max);
       } else {
-        view = { min: data.lambdaMin, max: data.lambdaMax };
+        view = clampView(data.lambdaMin, data.lambdaMax);
       }
     }
-    if (entries != null) llEntries = entries;
-    if (pending != null) pendingChanges = pending || {};
-    selectedIdx = selected && selected.region_idx != null
-      ? selected.region_idx : null;
+    // Don't wipe the state a live gesture is previewing: the edge-drag
+    // stages pendingChanges each frame and relies on selectedIdx/llEntries
+    // staying put until the commit lands in the stores on pointer-up.
+    var editing = interaction &&
+      (interaction.kind === "edge" || interaction.kind === "draw");
+    if (entries != null && !editing) llEntries = entries;
+    if (pending != null && !editing) pendingChanges = pending || {};
+    if (!editing) {
+      selectedIdx = selected && selected.region_idx != null
+        ? selected.region_idx : null;
+    }
     drawMode = !!drawActive;
     if (valdPayload != null) vald = valdPayload;
     if (visible != null) valdVisible = !!visible;
@@ -1073,8 +1294,17 @@
   };
 
   // ── Init — wait for the host div ─────────────────────────────────────────
+  var initAttempts = 0;
   function init() {
-    if (!host()) { setTimeout(init, 100); return; }
+    if (!host()) {
+      if (++initAttempts > 100) {
+        console.warn(
+          "wave-explorer spectrum: #spectrum-graph never appeared; giving up");
+        return;
+      }
+      setTimeout(init, 100);
+      return;
+    }
     if (window.__weSpectrumPending) {
       sync.apply(null, window.__weSpectrumPending);
     }
