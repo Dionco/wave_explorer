@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wave Explorer — interactive demo</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="assets/demo.css" />
+</head>
+<body>
+  <!-- Explainer banner (Task 10 fills copy/links) -->
+  <div id="demo-banner" class="demo-banner">
+    <h1>Wave Explorer</h1>
+    <p>An interactive line-curation dashboard for ASAP magnetic-field retrievals.
+       This is a live demo running entirely in your browser on <strong>preloaded
+       <code>ds_leo</code>-campaign data</strong> — see the thesis for the science and methodology.</p>
+    <p class="demo-hints"><strong>Try:</strong> scroll to zoom · drag to pan · click a region for its χ²/N statistics ·
+       drag a region edge, use "Draw Region" to add one, or "Delete region" to remove the selected one · switch stars for the full-range model.
+       <em>Edits are local to your browser and are not saved.</em></p>
+  </div>
+
+  <div class="asap-header">
+    <div class="asap-wordmark">
+      <span>Wave Explorer</span>
+      <span class="wm-sub">Line curation · ASAP · demo</span>
+    </div>
+    <div id="header-chips" class="header-chips"></div>
+    <div class="h-spacer"></div>
+    <button id="draw-mode-toggle" class="btn btn-sm" type="button">✎ Draw Region</button>
+    <div id="selected-region-container" class="selected-region-container" style="display:none">
+      <span class="h-chip c-cyan">◉ <span id="selected-region-label" class="hc-val"></span></span>
+      <button id="selected-delete-btn" class="btn btn-sm btn-danger" type="button" style="display:none">🗑 Delete region</button>
+      <button id="selected-clear-btn" class="btn btn-sm" type="button">Deselect</button>
+    </div>
+    <div id="demo-note" class="h-chip"></div>
+  </div>
+
+  <div class="asap-main">
+    <div class="plot-wrap">
+      <div class="spectrum-toolbar">
+        <div class="spectrum-toolbar-left">
+          <div class="eyebrow">Spectrum</div>
+          <div class="display-md">Observation, fit &amp; residuals</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+            <select id="star-select" class="we-select" style="min-width:220px"></select>
+          </div>
+        </div>
+        <div class="vald-toolbar-controls" style="display:flex;gap:10px;align-items:center">
+          <button id="vald-toggle-btn" class="btn btn-sm" type="button">│ VALD lines</button>
+          <span class="eyebrow" style="white-space:nowrap">min depth</span>
+          <input id="vald-depth-min-slider" type="range" min="0" max="1" step="0.05" value="0.10" style="width:160px" />
+        </div>
+        <div class="zoom-readout">scroll to zoom · drag to pan · double-click resets</div>
+      </div>
+      <div class="spectrum-canvas-wrap" style="position:relative">
+        <div id="spectrum-graph" class="spectrum-canvas"></div>
+      </div>
+      <div class="heatstrip-section">
+        <div class="heatstrip-head">
+          <span class="eyebrow">Quality map · full λ range</span>
+          <span class="subtitle">click or drag to navigate</span>
+        </div>
+        <div id="heatstrip" class="heatstrip-wrap" data-lmin="0" data-lmax="1"
+             title="Click or drag to move the spectrum view">
+          <div id="heatstrip-regions" class="heatstrip-regions"></div>
+          <div id="heatstrip-viewport" class="heatstrip-viewport"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col gap-md">
+      <div class="card">
+        <div class="card-title">Live Statistics</div>
+        <div id="candidate-stats">Click a region in the spectrum to see statistics.</div>
+        <div id="chi2-histogram"></div>
+      </div>
+      <div class="card gap-lg">
+        <div class="card-title" style="margin-bottom:12px">Worst Fitted Regions (top 50 by median χ²/N)</div>
+        <div class="table-wrap">
+          <table class="asap-table">
+            <thead><tr>
+              <th>#</th><th>Center (nm)</th><th>Range (nm)</th><th>χ²/N med</th>
+              <th>Quality</th><th>N★</th><th>N pix</th><th></th>
+            </tr></thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="cursor-tooltip" class="cursor-tooltip" style="display:none"></div>
+
+  <div id="draw-confirm-popover" style="display:none;position:fixed;z-index:999">
+    <div style="margin-bottom:10px;font-weight:bold">Add this region?</div>
+    <div id="draw-confirm-range-text" style="font-size:12px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px">
+      <button id="draw-confirm-accept" class="btn btn-sm btn-green" type="button">✓ Accept</button>
+      <button id="draw-confirm-cancel" class="btn btn-sm btn-danger" type="button">✕ Cancel</button>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-dot"></div>
+    <span id="status-summary" style="color:#9c9684"></span>
+    <span>·</span>
+    <span id="status-range" style="color:#b3553b"></span>
+  </div>
+
+  <!-- vendored classic scripts define window.WaveExplorer etc. -->
+  <script src="assets/spectrum.js"></script>
+  <script src="assets/heatstrip.js"></script>
+  <script src="assets/keyboard.js"></script>
+  <!-- controller -->
+  <script type="module" src="demo/main.mjs"></script>
+</body>
+</html>
