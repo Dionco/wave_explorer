@@ -21,7 +21,10 @@ import numpy as np
 import h5py
 from astropy.io import fits
 
-sys.path.insert(0, "/net/vdesk/data2/cobelens/MRP/new/asap")
+# ASAP checkout; overridable so other deployments don't need this exact path.
+_ASAP_PATH = os.environ.get(
+    "WAVE_EXPLORER_ASAP_PATH", "/net/vdesk/data2/cobelens/MRP/new/asap")
+sys.path.insert(0, _ASAP_PATH)
 from asap.SpectralAnalysis import SpectralAnalysis   # noqa: E402
 import asap.analysis_tools as tls                    # noqa: E402
 
@@ -34,7 +37,9 @@ def grid_wave_range(path_to_grid):
     """Vacuum [min, max] wavelength covered by the grid models. Read from any
     one node file (all share the same master wave solution)."""
     src = Path(path_to_grid)
-    node = next(f for f in os.listdir(src) if is_node_filename(f))
+    node = next((f for f in os.listdir(src) if is_node_filename(f)), None)
+    if node is None:
+        raise ValueError(f"No grid node files (*.hdf5) found in {src}")
     with h5py.File(src / node, "r") as h5f:
         w = h5f["wavelink"]["wave"][()] if "wavelink" in h5f.keys() else h5f["wave"][()]
     w = tls.convert_lambda_in_vacuum(w)
@@ -215,8 +220,12 @@ def _coverage_summary(kept, trimmed, dropped, med_wvl, n_orders):
 
 
 def _fill_wvl_nan(obs_wvl):
-    """Replace NaN wavelengths (masked order edges) with a linear continuation
-    of the order's finite wavelength step so interpolation stays monotone."""
+    """Replace NaN wavelengths (masked order edges) with values interpolated
+    from the order's finite samples so interpolation stays monotone. ONLY the
+    NaN positions are filled — genuine finite wavelengths are kept verbatim
+    (interior NaN via ``np.interp`` between the finite neighbours; leading/
+    trailing NaN extrapolated linearly with the local edge step). Rows with a
+    single finite point keep the previous whole-row linear-ramp behaviour."""
     out = np.array(obs_wvl, copy=True)
     for r in range(out.shape[0]):
         w = out[r]
@@ -225,10 +234,22 @@ def _fill_wvl_nan(obs_wvl):
             continue
         idx = np.arange(w.size)
         gi = idx[good]
-        # average step from the finite part
-        step = (w[gi[-1]] - w[gi[0]]) / (gi[-1] - gi[0]) if gi[-1] > gi[0] else 1.0
-        w0 = w[gi[0]]
-        out[r] = w0 + (idx - gi[0]) * step
+        if gi.size < 2:
+            # single finite point: no step information; keep the old ramp.
+            out[r] = w[gi[0]] + (idx - gi[0]) * 1.0
+            continue
+        bad = idx[~good]
+        # interior NaN: linear interpolation between finite neighbours
+        filled = np.interp(bad, gi, w[gi])
+        # edges: np.interp clamps to the end values — extrapolate with the
+        # local step at each edge instead.
+        lo_step = (w[gi[1]] - w[gi[0]]) / (gi[1] - gi[0])
+        hi_step = (w[gi[-1]] - w[gi[-2]]) / (gi[-1] - gi[-2])
+        lead = bad < gi[0]
+        trail = bad > gi[-1]
+        filled[lead] = w[gi[0]] + (bad[lead] - gi[0]) * lo_step
+        filled[trail] = w[gi[-1]] + (bad[trail] - gi[-1]) * hi_step
+        out[r, bad] = filled
     return out
 
 
@@ -253,8 +274,44 @@ def _write_model_fits(out_path, output_folder, obs_wvl, obs_flux, obs_err,
         fits.ImageHDU(data=np.asarray(fit), name="FIT"),
         fits.ImageHDU(data=np.asarray(fitnomag), name="FITNOMAG"),
     ])
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    hdul.writeto(out_path, overwrite=True)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic publish: write to a temp file in the SAME directory, then
+    # os.replace, so a concurrent reader never sees a half-written cache.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=out_path.parent, prefix=out_path.name + ".", suffix=".tmp")
+    os.close(fd)
+    try:
+        hdul.writeto(tmp_name, overwrite=True)
+        os.replace(tmp_name, out_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _fitted_veiling_to_fit(SA, veiling):
+    """Map the fitted per-band veiling from ``results.txt`` onto the fit-band
+    subset ``gen_spec`` expects as ``veilingFacToFit`` (values at the fitBands
+    positions of veilingBands). Returns ``None`` ("don't pass" → ASAP keeps its
+    config-derived default) when veiling was not fitted, the positions cannot
+    be mapped, or the fitted values are non-finite/all-zero (an all-zero or NaN
+    veiling is indistinguishable from "no veiling", so passing it changes
+    nothing but risks poisoning the model with NaN)."""
+    veil = np.asarray(veiling, dtype=float)
+    if veil.size == 0 or not getattr(SA, "fitVeiling", False):
+        return None
+    bands = getattr(SA, "veilingBands", "") or ""
+    fit_bands = getattr(SA, "fitBands", "") or ""
+    pos = [bands.find(b) for b in fit_bands]
+    if not pos or any(p < 0 or p >= veil.size for p in pos):
+        return None
+    sub = veil[pos]
+    if not np.all(np.isfinite(sub)) or np.all(sub == 0):
+        return None
+    return sub
 
 
 def compute_full_model(output_folder, out_path=None, grid_path_override=None) -> Path:
@@ -282,19 +339,24 @@ def compute_full_model(output_folder, out_path=None, grid_path_override=None) ->
         SA.get_grid_dims()
 
         coeffs = np.asarray(ri.mag_ff, dtype=float)
+        # Fitted veiling (results.txt) mapped onto gen_spec's veilingFacToFit;
+        # None when not fitted / non-finite / all-zero, in which case ASAP
+        # keeps its config-derived default (identical to the fit run).
+        veil_to_fit = _fitted_veiling_to_fit(SA, ri.veiling)
         # gen_spec uses obs_flux only for the per-order continuum adjustment, so
         # pass the NaN-filled obs (obs_flux_fit); the returned model is on obs_wvl.
-        # positional tail matches gen_spec(...): vb=None, rv, vsini, vmac
+        # positional tail matches gen_spec(...): vb=None, rv, vsini, vmac,
+        # veilingFacToFit
         fit = SA.gen_spec(obs_wvl, obs_flux_fit, obs_err, nan_mask, SA.nwvls, SA.grid_n,
                           coeffs, ri.teff, ri.logg, ri.mh, ri.afe,
                           SA.teffs, SA.loggs, SA.mhs, SA.alphas,
-                          None, ri.rv, ri.vsini, ri.vmac)
+                          None, ri.rv, ri.vsini, ri.vmac, veil_to_fit)
         coeffs0 = np.zeros_like(coeffs)
         coeffs0[0] = 1
         fitnomag = SA.gen_spec(obs_wvl, obs_flux_fit, obs_err, nan_mask, SA.nwvls, SA.grid_n,
                                coeffs0, ri.teff, ri.logg, ri.mh, ri.afe,
                                SA.teffs, SA.loggs, SA.mhs, SA.alphas,
-                               None, ri.rv, ri.vsini, ri.vmac)
+                               None, ri.rv, ri.vsini, ri.vmac, veil_to_fit)
 
     normfac = float(getattr(SA, "normFactor", 1.0) or 1.0)
 

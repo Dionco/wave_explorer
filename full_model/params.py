@@ -9,15 +9,22 @@ The config's ``pathToGrid`` can be STALE (the gl_382 example points at a removed
 as: explicit override > config value if it is a real directory > the known full
 narval grid fallback.
 """
+import os
 import sys
 import configparser
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, "/net/vdesk/data2/cobelens/MRP/new/asap")
+# ASAP checkout + fallback grid; overridable via environment variables so other
+# deployments don't need these exact paths.
+_ASAP_PATH = os.environ.get(
+    "WAVE_EXPLORER_ASAP_PATH", "/net/vdesk/data2/cobelens/MRP/new/asap")
+sys.path.insert(0, _ASAP_PATH)
 from asap.SpectralAnalysis import read_res_v2   # noqa: E402
 
-DEFAULT_GRID = "/net/vdesk/data2/cobelens/MRP/new/grid_models/hdf5-narval-full/"
+DEFAULT_GRID = os.environ.get(
+    "WAVE_EXPLORER_GRID_PATH",
+    "/net/vdesk/data2/cobelens/MRP/new/grid_models/hdf5-narval-full/")
 
 
 @dataclass
@@ -70,9 +77,19 @@ def load_run_inputs(output_folder, grid_path_override=None) -> RunInputs:
     path_to_data = paths["pathToData"]
     line_list = paths["lineListFile"]
 
-    res = read_res_v2(str(output_folder / "results.txt"))
+    results_path = output_folder / "results.txt"
+    res = read_res_v2(str(results_path))
     star = str(res.get("star", output_folder.parent.name))
     obs_fits = path_to_data.rstrip("/") + "/" + star + ".fits"
+
+    def require(key):
+        # No silent defaults: a missing rv/vsini/vmac would quietly shift or
+        # unbroaden the model, and a missing mag_ff would silently yield a pure
+        # zero-field model. Fail loudly instead.
+        if key not in res:
+            raise ValueError(
+                f"results.txt is missing required key '{key}' ({results_path})")
+        return res[key]
 
     return RunInputs(
         output_folder=output_folder, config_path=cfg_path,
@@ -80,9 +97,9 @@ def load_run_inputs(output_folder, grid_path_override=None) -> RunInputs:
         star=star,
         teff=float(res["teff"]), logg=float(res["logg"]),
         mh=float(res["mh"]), afe=float(res["afe"]),
-        rv=float(res.get("rv", 0.0)),
-        vsini=float(res.get("vsini", 0.0)),
-        vmac=float(res.get("vmac", 0.0)),
-        mag_ff=list(res.get("mag_ff", [1.0])),
+        rv=float(require("rv")),
+        vsini=float(require("vsini")),
+        vmac=float(require("vmac")),
+        mag_ff=list(require("mag_ff")),
         veiling=list(res.get("veiling", [])),
     )
