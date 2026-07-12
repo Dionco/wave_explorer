@@ -14,9 +14,12 @@ A static, server-less export of the app is published as a demo at
 
 ```bash
 cd new/obs-data-example/
-/net/vdesk/data2/cobelens/.conda/envs/asap/bin/python -m wave_explorer \
-    --suffix bic_optimal_region_filtering_v1 \
-    --line-list /path/to/targets_llist_v5.txt
+alias wepy=/net/vdesk/data2/cobelens/.conda/envs/asap/bin/python
+
+wepy -m wave_explorer                  # no suffix → lists available campaigns
+wepy -m wave_explorer bic_optimal_region_filtering_v1
+# or explore one run only:
+wepy -m wave_explorer 06_retrievals/ds_leo/output_ds_leo_bic_optimal_region_filtering_v1
 # → http://127.0.0.1:8050
 ```
 
@@ -25,9 +28,22 @@ base python shadowing the env).
 
 ### CLI
 
+```
+python -m wave_explorer [SUFFIX] [options]
+```
+
+`SUFFIX` picks which retrieval run of each star to load (folders
+`06_retrievals/<star>/output_<star>_<SUFFIX>`). Run without one — or with
+`--list-suffixes` — to see everything available with star counts; a typo'd
+suffix suggests close matches. `--suffix SUFFIX` still works too.
+
+Alternatively, pass a **path to a single `output_*` folder** instead of a
+suffix to load exactly that one run (one star; the line list is auto-detected
+from that run's `config_copy.ini`). Not compatible with `--stack-teff`.
+
 | Flag | Meaning |
 |------|---------|
-| `--suffix` (required) | retrieval output suffix; folders `06_retrievals/<star>/output_*_<suffix>` |
+| `--list-suffixes` | list every available suffix (with star counts) and exit |
 | `--retrievals-dir` | defaults to `./06_retrievals` (or sibling `obs-data-example/06_retrievals`) |
 | `--line-list` | explicit line list; otherwise auto-detected from the runs' `config_copy.ini` majority vote (errors on a tie) |
 | `--vald-list` | VALD3 short-format list for the absorption-line overlay; defaults to the bundled `data/DionCobelens.017597` (700–1000 nm) |
@@ -36,6 +52,10 @@ base python shadowing the env).
 | `--stack-teff [N]` | Teff-stack mode: show N stars (default 10) spanning the campaign's Teff range as offset spectra instead of the mean |
 | `--stack-offset` | vertical offset between stacked spectra |
 | `--host/--port/--debug/--debug-hover` | server options |
+
+Flags are grouped in `--help` (data selection / display / server / debugging),
+and dataset errors (missing suffix, line-list tie, busy port) exit with a
+short actionable message instead of a traceback.
 
 ### Keyboard shortcuts
 

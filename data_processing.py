@@ -571,12 +571,21 @@ def build_dataset(
     smooth_window: int,
     vald_path: Optional[str] = None,
     only_slugs: Optional[List[str]] = None,
+    only_folders: Optional[Dict[str, Path]] = None,
 ) -> dict:
-    """Load and process all spectral data for a given suffix."""
-    found = discover_output_folders(retrievals_dir, suffix)
-    if only_slugs is not None:
-        wanted = set(only_slugs)
-        found = {s: p for s, p in found.items() if s in wanted}
+    """Load and process all spectral data for a given suffix.
+
+    ``only_folders`` (slug -> output folder) bypasses suffix-based discovery
+    entirely and loads exactly those folders — used when the caller points at
+    a specific output folder rather than a campaign suffix.
+    """
+    if only_folders is not None:
+        found = dict(only_folders)
+    else:
+        found = discover_output_folders(retrievals_dir, suffix)
+        if only_slugs is not None:
+            wanted = set(only_slugs)
+            found = {s: p for s, p in found.items() if s in wanted}
     if not found:
         raise RuntimeError(
             f"No output folders for suffix '{suffix}' in {retrievals_dir}"
