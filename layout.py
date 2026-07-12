@@ -28,46 +28,6 @@ BRAND_MARK = (
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Initial candidate range
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def initial_candidate_range(
-    dataset: dict, min_w: float, max_w: float
-) -> tuple:
-    """Pick a sensible initial candidate range.
-
-    Strategy: prefer the first non-excluded line-list region with finite
-    chi2 stats, so the user lands on something meaningful instead of the
-    left edge (which often has no fitted pixels).
-
-    Falls back to the first line-list region, then to a 1 nm window at
-    the left of the spectrum.
-    """
-    for rs in dataset.get("ll_hover_stats", []):
-        c2 = rs.get("med_chi2")
-        if c2 is None:
-            continue
-        try:
-            c2f = float(c2)
-        except (TypeError, ValueError):
-            continue
-        if c2f == c2f:  # NaN check
-            lo = max(min_w, min(max_w, float(rs["lower"])))
-            hi = max(min_w, min(max_w, float(rs["upper"])))
-            if hi > lo:
-                return lo, hi
-
-    for e in dataset.get("ll_entries", []):
-        lo = max(min_w, min(max_w, float(e["lower"])))
-        hi = max(min_w, min(max_w, float(e["upper"])))
-        if hi > lo and not e.get("excluded", False):
-            return lo, hi
-
-    return min_w, min(min_w + 1.0, max_w)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Header
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -248,14 +208,6 @@ def build_header(dataset: dict) -> html.Div:
 # ══════════════════════════════════════════════════════════════════════════════
 # Stats Panel
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-_ROMAN = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V"}
-
-
-def romanize(ion) -> str:
-    """Render an ionisation stage as a Roman numeral (1 -> I, 2 -> II)."""
-    return _ROMAN.get(str(ion).strip(), str(ion))
 
 
 def _legend_swatch(color: str, label: str) -> html.Div:
@@ -644,6 +596,30 @@ def _effective_excluded(
     return False
 
 
+def _effective_bounds(
+    real_idx: int,
+    row: dict,
+    ll_entries,
+    pending_changes,
+) -> tuple:
+    """Return the effective (lower, upper, center) for a table row.
+
+    Mirrors build_heatstrip_regions: a pending edit wins, then the live
+    ll-entries state (saved drags / added regions), then the
+    registration-time summary row.
+    """
+    e = (pending_changes or {}).get(str(real_idx))
+    if not isinstance(e, dict):
+        if ll_entries and 0 <= real_idx < len(ll_entries):
+            e = ll_entries[real_idx]
+        else:
+            e = row
+    lo = float(e["lower"])
+    hi = float(e["upper"])
+    center = float(e.get("center", 0.5 * (lo + hi)))
+    return lo, hi, center
+
+
 def build_table_row(
     i: int,
     row: dict,
@@ -656,6 +632,13 @@ def build_table_row(
     col = chi2_color(row["med_chi2"])
     real_idx = int(row.get("region_idx", i))
     is_excluded = _effective_excluded(real_idx, ll_entries, pending_changes)
+    lo, hi, center = _effective_bounds(real_idx, row, ll_entries, pending_changes)
+    # χ² is NOT recomputed for pending-modified bounds (expensive); mark it
+    # stale instead so the number is readably provisional.
+    bounds_modified = (
+        abs(lo - float(row["lower"])) > 1e-6
+        or abs(hi - float(row["upper"])) > 1e-6
+    )
 
     if is_excluded:
         btn_char = "\u21ba"  # anticlockwise open-circle arrow = restore
@@ -673,11 +656,18 @@ def build_table_row(
         className=tr_cls,
         children=[
             html.Td(f"{i+1}", className="rank-num"),
-            html.Td(f"{row['center']:.3f}"),
-            html.Td(f"{row['lower']:.3f} – {row['upper']:.3f}"),
+            html.Td(f"{center:.3f}"),
+            html.Td(f"{lo:.3f} – {hi:.3f}"),
             html.Td(
-                f"{row['med_chi2']:.3f}",
+                f"{row['med_chi2']:.3f}" + ("*" if bounds_modified else ""),
                 style={"color": col, "fontWeight": "700"},
+                title=(
+                    "χ²/N computed for the original bounds "
+                    f"({row['lower']:.3f} – {row['upper']:.3f} nm); "
+                    "save to refresh"
+                    if bounds_modified
+                    else None
+                ),
             ),
             html.Td(
                 html.Span(
@@ -765,37 +755,6 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
     _common_w = dataset["common_w"]
     _min_w = float(_common_w[0])
     _max_w = float(_common_w[-1])
-
-    ll_stats_jsonable = [
-        {
-            "region_idx": int(rs["region_idx"]),
-            "lower": float(rs["lower"]),
-            "upper": float(rs["upper"]),
-            "center": float(rs["center"]),
-            "element": str(rs["element"]),
-            "ion": str(rs["ion"]),
-            "med_chi2": float(rs["med_chi2"]) if np.isfinite(rs["med_chi2"]) else None,
-            "n_stars": int(rs["n_stars"]),
-            "med_npix": int(rs["med_npix"]),
-            "mean_resid": (
-                float(rs["mean_resid"]) if np.isfinite(rs["mean_resid"]) else None
-            ),
-            "mean_abs_resid": (
-                float(rs["mean_abs_resid"])
-                if np.isfinite(rs["mean_abs_resid"])
-                else None
-            ),
-            "p95_abs_resid": (
-                float(rs["p95_abs_resid"]) if np.isfinite(rs["p95_abs_resid"]) else None
-            ),
-            "mean_norm_resid": (
-                float(rs["mean_norm_resid"])
-                if np.isfinite(rs["mean_norm_resid"])
-                else None
-            ),
-        }
-        for rs in dataset["ll_hover_stats"]
-    ]
 
     def _jsonable_entry(e: dict) -> dict:
         return {
@@ -1003,7 +962,6 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
                 ],
             ),
             # ── Hidden state stores ────────────────────────────────────────────
-            dcc.Store(id="source-type", data="none"),
             dcc.Store(
                 id="spectrum-data-store",
                 data=(
@@ -1020,12 +978,9 @@ def build_layout(dataset: dict, debug_hover: bool = False) -> html.Div:
             dcc.Store(id="vald-lines-store", data=_vald_payload),
             dcc.Store(id="vald-visible-store", data=False),
             dcc.Store(id="vald-depth-min-store", data=0.10),
-            dcc.Store(id="ll-stats-store", data=ll_stats_jsonable),
             dcc.Store(id="drag-result-store", data=None),
             dcc.Store(id="draw-region-store", data=None),
-            dcc.Store(id="tooltip-sync-store", data=None),
             dcc.Store(id="handles-sync-store", data=None),
-            dcc.Store(id="handles-hover-sync-store", data=None),
             dcc.Store(id="pending-changes-store", data={}),
             dcc.Store(id="unsaved-flag-store", data={"has_changes": False}),
             dcc.Store(id="discard-signal-store", data=None),

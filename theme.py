@@ -56,20 +56,29 @@ DISPLAY = "'Fraunces', 'Source Serif Pro', Georgia, serif"
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-# χ²/N quality thresholds:
-#   GOOD  : v < 5
-#   FAIR  : 5 ≤ v < 15
-#   POOR  : 15 ≤ v < 30
+# χ²/N quality tier upper bounds:
+#   GOOD  : v < 5   (_CHI2_GOOD)
+#   FAIR  : 5 ≤ v < 15   (_CHI2_FAIR)
+#   POOR  : 15 ≤ v < 30  (_CHI2_BAD is the poor/bad boundary)
 #   BAD   : v ≥ 30
 _CHI2_GOOD = 5.0
 _CHI2_FAIR = 15.0
-_CHI2_POOR = 15.0
 _CHI2_BAD = 30.0
+
+
+def _finite(v) -> bool:
+    """True iff `v` is a finite number (None-safe, unlike np.isfinite)."""
+    if v is None:
+        return False
+    try:
+        return bool(np.isfinite(v))
+    except TypeError:
+        return False
 
 
 def chi2_color(v: float) -> str:
     """Return color for chi2 value."""
-    if not np.isfinite(v):
+    if not _finite(v):
         return C["muted"]
     if v < _CHI2_GOOD:
         return C["green"]
@@ -82,7 +91,7 @@ def chi2_color(v: float) -> str:
 
 def chi2_label(v: float) -> str:
     """Return quality label for chi2 value."""
-    if not np.isfinite(v):
+    if not _finite(v):
         return "—"
     if v < _CHI2_GOOD:
         return "GOOD"
@@ -99,7 +108,7 @@ def chi2_tier(v: float) -> str:
     Mirrors chi2_label / chi2_color; used as the `.q-<tier>` CSS class
     suffix for quality badge chips.
     """
-    if not np.isfinite(v):
+    if not _finite(v):
         return "miss"
     if v < _CHI2_GOOD:
         return "good"
@@ -112,7 +121,7 @@ def chi2_tier(v: float) -> str:
 
 def chi2_pct(v: float, cap: float = _CHI2_BAD) -> int:
     """Return progress-bar fill percentage (0–100)."""
-    if not np.isfinite(v):
+    if not _finite(v):
         return 0
     return min(100, int(v / cap * 100))
 
@@ -123,8 +132,8 @@ def chi2_pct(v: float, cap: float = _CHI2_BAD) -> int:
 
 
 def _fmt(v: float, fmt: str = ".4f", fallback: str = "—") -> str:
-    """Format a float value; return fallback if not finite."""
-    return fallback if not np.isfinite(v) else f"{v:{fmt}}"
+    """Format a float value; return fallback if None or not finite."""
+    return fallback if not _finite(v) else f"{v:{fmt}}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

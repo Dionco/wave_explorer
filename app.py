@@ -3,9 +3,9 @@ ASAP Line Curation Dashboard — App Factory & Entry Point
 """
 
 import argparse
+import sys
 from pathlib import Path
 
-from flask_caching import Cache
 from dash import Dash, Input, Output
 
 from .callbacks import register_all_callbacks
@@ -13,15 +13,14 @@ from .data_processing import build_dataset
 from .layout import build_layout
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Caching configuration
-# ══════════════════════════════════════════════════════════════════════════════
-
-cache = Cache(config={"CACHE_TYPE": "SimpleCache"})
-
-
 def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
     """Factory function to create the Dash app with all callbacks."""
+
+    if not len(dataset.get("common_w", [])):
+        raise RuntimeError(
+            "Dataset error: common wavelength grid is empty — no overlapping "
+            "spectral coverage was found across the loaded stars."
+        )
 
     min_w = float(dataset["common_w"][0])
     max_w = float(dataset["common_w"][-1])
@@ -29,8 +28,6 @@ def create_app(dataset: dict, debug_hover: bool = False) -> Dash:
 
     app = Dash(__name__, suppress_callback_exceptions=True)
     app.title = f"ASAP — {dataset['suffix']}"
-
-    cache.init_app(app.server)
 
     app.layout = build_layout(dataset, debug_hover=debug_hover)
 
@@ -183,6 +180,9 @@ Examples:
             args.retrievals_dir = str(
                 candidate if candidate.exists() else cwd / "06_retrievals"
             )
+
+    if not Path(args.retrievals_dir).is_dir():
+        sys.exit(f"retrievals dir not found: {args.retrievals_dir}")
 
     if args.vald_list is None:
         bundled = Path(__file__).resolve().parent / "data" / "DionCobelens.017597"

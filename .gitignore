@@ -29,3 +29,6 @@ Thumbs.db
 # Optional local runtime/cache folders
 .cache/
 instance/
+
+# ASAP side-effect artifact (adjust_continuum writes to cwd)
+normFactors.txt

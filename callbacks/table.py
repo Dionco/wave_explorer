@@ -10,13 +10,10 @@ from dash import Input, Output
 from ..layout import build_heatstrip_regions, build_table_row
 
 
-def register_table_callbacks(app, dataset):
+def register_table_callbacks(app, dataset, min_w, max_w):
     """Register derived-view refresh callbacks (table body + heat-strip)."""
 
     all_rows = dataset["region_summary"]
-    common_w = dataset["common_w"]
-    min_w = float(common_w[0])
-    max_w = float(common_w[-1])
     chi2_map = {
         int(r["region_idx"]): float(r["med_chi2"]) for r in all_rows
     }

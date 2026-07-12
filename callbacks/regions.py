@@ -34,20 +34,23 @@ def _stage(pending_changes, ll_entries_data, idx, mutator):
     return updated
 
 
-def _push_history(history, ll_entries_data, pending_changes):
-    """Append a snapshot of the current state to the undo history.
+def _push_history(history, pending_changes, ll_entries_data=None):
+    """Append an undo snapshot to the history.
 
-    Each entry stores both ll-entries and pending-changes so undo can
-    reverse mutations that change either (drag/toggle/draw-add/delete).
+    Every snapshot stores the (small) pending-changes dict. The full
+    ll-entries list is included ONLY for operations that structurally
+    modify it (accept drawn region, delete added region) — undo restores
+    the list from that snapshot when present and leaves the current list
+    untouched otherwise. Keeping non-structural snapshots O(changed)
+    stops every drag/toggle from shipping the whole ll list through the
+    browser↔server store round-trips.
     Capped at MAX_UNDO_DEPTH so long sessions don't balloon the store.
     """
     hist = list(history or [])
-    hist.append(
-        {
-            "ll": list(ll_entries_data or []),
-            "pending": dict(pending_changes or {}),
-        }
-    )
+    snapshot = {"pending": dict(pending_changes or {})}
+    if ll_entries_data is not None:
+        snapshot["ll"] = list(ll_entries_data)
+    hist.append(snapshot)
     if len(hist) > MAX_UNDO_DEPTH:
         hist = hist[-MAX_UNDO_DEPTH:]
     return hist
@@ -98,7 +101,7 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         updated = _stage(pending_changes, ll_entries_data, region_idx, mutate)
         if updated is None:
             return no_update, no_update, no_update
-        new_history = _push_history(history, ll_entries_data, pending_changes)
+        new_history = _push_history(history, pending_changes)
         return updated, {"has_changes": True}, new_history
 
     # ────────────────────────────────────────────────────────────
@@ -130,7 +133,7 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         updated = _stage(pending_changes, ll_entries_data, idx, mutate)
         if updated is None:
             return no_update, no_update, no_update
-        new_history = _push_history(history, ll_entries_data, pending_changes)
+        new_history = _push_history(history, pending_changes)
         return updated, {"has_changes": True}, new_history
 
     # ────────────────────────────────────────────────────────────
@@ -177,7 +180,10 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         new_idx = len(entries) - 1
         staged = dict(pending_changes or {})
         staged[str(new_idx)] = dict(new_entry)
-        new_history = _push_history(history, ll_entries_data, pending_changes)
+        # Structural change → snapshot the ll list so undo can restore it.
+        new_history = _push_history(
+            history, pending_changes, ll_entries_data or []
+        )
         return entries, staged, {"has_changes": True}, new_history
 
     # ────────────────────────────────────────────────────────────
@@ -324,6 +330,7 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         Output("discard-signal-store", "data"),
         Output("ll-entries-store", "data", allow_duplicate=True),
         Output("pending-history-store", "data", allow_duplicate=True),
+        Output("selected-region-store", "data", allow_duplicate=True),
         Input("discard-changes-btn", "n_clicks"),
         State("ll-entries-store", "data"),
         State("pending-changes-store", "data"),
@@ -353,12 +360,16 @@ def register_region_callbacks(app, dataset, min_w, max_w):
                 and i in pending_indices
             )
         ]
+        # Selection is cleared too: dropping never-saved additions shifts
+        # indices, so a kept selection could point at the wrong region
+        # (mirrors delete_selected_added_region).
         return (
             {},
             {"has_changes": False},
             {"tick": n_clicks, "entries": trimmed},
             trimmed,
             [],
+            None,
         )
 
     # ────────────────────────────────────────────────────────────
@@ -492,7 +503,7 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         updated = _stage(pending_changes, ll_entries_data, idx, mutate)
         if updated is None:
             return no_update, no_update, no_update
-        new_history = _push_history(history, ll_entries_data, pending_changes)
+        new_history = _push_history(history, pending_changes)
         return updated, {"has_changes": True}, new_history
 
     # ────────────────────────────────────────────────────────────
@@ -537,7 +548,8 @@ def register_region_callbacks(app, dataset, min_w, max_w):
             new_k = ki - 1 if ki > idx else ki
             rekeyed[str(new_k)] = v
         has_changes = bool(rekeyed)
-        new_history = _push_history(history, ll_entries_data, pending_changes)
+        # Structural change → snapshot the ll list so undo can restore it.
+        new_history = _push_history(history, pending_changes, ll_entries_data)
         return (
             trimmed,
             rekeyed,
@@ -567,19 +579,38 @@ def register_region_callbacks(app, dataset, min_w, max_w):
         Output("pending-changes-store", "data", allow_duplicate=True),
         Output("unsaved-flag-store", "data", allow_duplicate=True),
         Output("pending-history-store", "data", allow_duplicate=True),
+        Output("selected-region-store", "data", allow_duplicate=True),
         Input("undo-btn", "n_clicks"),
         State("pending-history-store", "data"),
         prevent_initial_call=True,
     )
     def undo_last_change(n_clicks, history):
         if not n_clicks or not history:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
         new_hist = list(history)
         snapshot = new_hist.pop()
-        prev_ll = snapshot.get("ll") or []
         prev_pending = snapshot.get("pending") or {}
         has_changes = bool(prev_pending)
-        return prev_ll, prev_pending, {"has_changes": has_changes}, new_hist
+        if "ll" in snapshot:
+            # Structural snapshot: restore the entries list and clear the
+            # selection — indices may have shifted, so a kept selection
+            # could point at the wrong region.
+            return (
+                snapshot.get("ll") or [],
+                prev_pending,
+                {"has_changes": has_changes},
+                new_hist,
+                None,
+            )
+        # Non-structural snapshot (drag / exclude toggle): the entries
+        # list was untouched by the undone operation — leave it alone.
+        return (
+            no_update,
+            prev_pending,
+            {"has_changes": has_changes},
+            new_hist,
+            no_update,
+        )
 
     @app.callback(
         Output("undo-btn", "disabled"),

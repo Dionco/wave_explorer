@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "dash>=2.0",
-    "flask-caching",
     "numpy",
 ]
 

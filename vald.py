@@ -23,7 +23,7 @@ def parse_vald_lines(path) -> List[dict]:
     """Parse a VALD3 short-format file and return per-transition dicts.
 
     Skips the standard 3-line header. Silently ignores any subsequent row
-    that does not have at least 10 numeric fields after the quoted species
+    that does not have at least 9 numeric fields after the quoted species
     label (these include trailing reference blocks and stray blank lines).
     The returned list is sorted by wavelength.
     """
@@ -54,18 +54,24 @@ def _parse_row(raw: str):
     ref_start = rest.find("'")
     if ref_start >= 0:
         rest = rest[:ref_start]
-    parts = [p.strip() for p in rest.split(",") if p.strip()]
+    # Split WITHOUT dropping empty fields: an empty field mid-row must not
+    # shift later columns onto the wrong positional index. Only the trailing
+    # empties left by the comma before the (stripped) reference are removed.
+    parts = [p.strip() for p in rest.split(",")]
+    while parts and parts[-1] == "":
+        parts.pop()
     # VALD short format: 9 numeric fields after the species label
     # (WL_vac, Excit, Vmic, log gf, Rad., Stark, Waals, Lande, Central depth)
     if len(parts) < 9:
         return None
     try:
-        wavelength_nm = float(parts[0])
-        excit_ev = float(parts[1])
-        log_gf = float(parts[3])
-        central_depth = float(parts[8])
+        numeric = [float(p) for p in parts[:9]]
     except ValueError:
-        return None
+        return None  # empty or non-numeric field → reject the row
+    wavelength_nm = numeric[0]
+    excit_ev = numeric[1]
+    log_gf = numeric[3]
+    central_depth = numeric[8]
     element, _, ion_str = species.partition(" ")
     try:
         ion = int(ion_str.strip() or "1")
@@ -98,9 +104,8 @@ def build_vald_payload(
     outside every observed span are dropped — this hides VALD lines in the
     inter-order gaps that the spectrum interpolator linearly bridges.
 
-    Also returns a `lines` list of dicts for compatibility with code that
-    prefers row-oriented access (tests, future tooltips), and the
-    [depthMin, depthMax] range so the UI can configure the depth slider.
+    Also returns the [depthMin, depthMax] range so the UI can configure the
+    depth slider.
     """
     def _in_observed(w: float) -> bool:
         if not observed_ranges:
@@ -125,7 +130,6 @@ def build_vald_payload(
         "depths":      depths,
         "logGf":       [float(e["log_gf"]) for e in in_range],
         "excitEv":     [float(e["excit_ev"]) for e in in_range],
-        "lines": [dict(e) for e in in_range],
         "depthMin": min(depths) if depths else 0.0,
         "depthMax": max(depths) if depths else 0.0,
     }

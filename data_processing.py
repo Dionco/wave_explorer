@@ -4,6 +4,7 @@ ASAP Data Processing & Loading Layer
 
 import configparser
 import math
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -39,6 +40,13 @@ def discover_output_folders(retrievals_dir: Path, suffix: str) -> Dict[str, Path
             if p.is_dir() and p.name.endswith(f"_{suffix}")
         )
         if candidates:
+            if len(candidates) > 1:
+                print(
+                    f"  ⚠ {star_dir.name}: {len(candidates)} output folders "
+                    f"match suffix '{suffix}' "
+                    f"({', '.join(p.name for p in candidates)}) — "
+                    f"using {candidates[0].name}"
+                )
             found[star_dir.name] = candidates[0]
     return found
 
@@ -156,7 +164,9 @@ def save_curated_line_list(
     import tempfile
     from datetime import datetime
 
-    ts = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+    # %f (microseconds) prevents same-second saves clobbering each other
+    # via the os.replace below.
+    ts = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     out_path = dest_dir / f"line_list_{suffix}_curated_{ts}.txt"
@@ -257,28 +267,6 @@ def save_curated_line_list(
 
     os.replace(tmp_path, str(out_path))
     return out_path
-
-
-def save_line_list(path: Path, entries: List[dict]) -> None:
-    """Deprecated: kept for backward compatibility with any external callers.
-
-    Writes the ACTIVE (non-excluded) entries in the 6-column format to `path`.
-    New code should use `save_curated_line_list` which never overwrites and
-    carries full audit info.
-    """
-    import os
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        "w", dir=str(path.parent), delete=False, suffix=".tmp"
-    ) as fh:
-        tmp_path = fh.name
-        fh.write("# center    lower    upper    element    ion    order\n")
-        for e in entries:
-            if e.get("excluded", False):
-                continue
-            fh.write(_format_entry_line(e) + "\n")
-    os.replace(tmp_path, str(path))
 
 
 def resolve_line_list_path(
@@ -433,7 +421,12 @@ def smooth_nan(y: np.ndarray, window: int) -> np.ndarray:
 def compute_region_chi2_for_star(
     fit_data: dict, wvl_lo: float, wvl_hi: float
 ) -> Tuple[float, int]:
-    """Compute median chi2/N and pixel count for a region in one star."""
+    """Compute mean chi2/N and pixel count for a region in one star.
+
+    Returns the MEAN of the pointwise ((flux-fit)/err)² over the region's
+    fitted pixels; the median across stars is taken downstream (so table
+    labels like "χ²/N med" refer to that per-star median).
+    """
     wvl_arr = fit_data["wvl"]
     flux_fit = fit_data["flux_fit"]
     fit_arr = fit_data["fit"]
@@ -608,7 +601,6 @@ def build_dataset(
     if not resolved_ll.exists():
         raise RuntimeError(f"Line list not found: {resolved_ll}")
     ll_entries = load_line_list(resolved_ll)
-    region_summary = summarize_region_chi2(fit_data_cache, ll_entries)
 
     from .vald import parse_vald_lines
     vald_entries: List[dict] = []
@@ -617,9 +609,10 @@ def build_dataset(
 
     w_min = float(np.nanmin([v[0].min() for v in flat_data.values()]))
     w_max = float(np.nanmax([v[0].max() for v in flat_data.values()]))
-    common_w = np.arange(w_min, w_max + grid_step_nm, grid_step_nm, dtype=np.float32)
+    n_grid = int(round((w_max - w_min) / grid_step_nm)) + 1
+    common_w = np.linspace(w_min, w_max, n_grid).astype(np.float32)
 
-    obs_stack, fit_stack = [], []
+    obs_stack, fit_stack, kept_slugs = [], [], []
     for slug in sorted(flat_data):
         w, obs, fit = flat_data[slug]
         oi = interp_to_common_grid(w, obs, common_w)
@@ -627,19 +620,39 @@ def build_dataset(
         if np.sum(np.isfinite(oi) & np.isfinite(fi)) >= 100:
             obs_stack.append(oi)
             fit_stack.append(fi)
+            kept_slugs.append(slug)
 
     obs_arr = np.array(obs_stack, dtype=np.float32)
     fit_arr = np.array(fit_stack, dtype=np.float32)
     if obs_arr.size == 0:
         raise RuntimeError("No stars left after interpolation / quality filtering.")
 
-    with np.errstate(all="ignore"):
+    # Keep χ² statistics and the displayed mean/std computed over the SAME
+    # star sample: drop stars that failed the overlap filter above from the
+    # caches too, so summarize_region_chi2 / compute_custom_region_chi2 and
+    # n_stars all describe the stacked sample.
+    dropped = sorted(set(flat_data) - set(kept_slugs))
+    if dropped:
+        print(
+            f"  ⚠ {len(dropped)} star(s) dropped by the <100-overlapping-"
+            f"pixel filter (excluded from mean AND χ² stats): "
+            + ", ".join(dropped)
+        )
+    fit_data_cache = {s: fit_data_cache[s] for s in kept_slugs}
+    flat_data = {s: flat_data[s] for s in kept_slugs}
+    region_summary = summarize_region_chi2(fit_data_cache, ll_entries)
+
+    # warnings.catch_warnings (not np.errstate) is needed for the all-NaN
+    # column RuntimeWarnings ("Mean of empty slice" / "Degrees of freedom
+    # <= 0") that nanmean/nanstd emit via the warnings machinery.
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         mean_obs = np.nanmean(obs_arr, axis=0)
         mean_fit = np.nanmean(fit_arr, axis=0)
         std_obs = np.nanstd(obs_arr, axis=0)
         std_fit = np.nanstd(fit_arr, axis=0)
-    mean_resid = mean_obs - mean_fit
-    std_resid = np.nanstd(obs_arr - fit_arr, axis=0)
+        mean_resid = mean_obs - mean_fit
+        std_resid = np.nanstd(obs_arr - fit_arr, axis=0)
 
     # Precompute hover stats for each fitted line-list region.
     # `region_idx` here is 1-based (matches the front-end tooltip) but maps
@@ -759,6 +772,23 @@ def _build_region_metadata(dataset: dict) -> dict:
     }
 
 
+def _round_wavelengths(seq) -> List[float]:
+    """Wavelength axis values: rounded to 4 decimals (0.1 pm) to keep the
+    JSON payload compact instead of embedding full 17-digit float reprs."""
+    return [round(float(v), 4) for v in seq]
+
+
+def _round_fluxes(seq) -> list:
+    """Flux/fit/resid values: 5 decimals; non-finite becomes None.
+
+    Contract with spectrum.js: gaps in the data are null (never NaN, which
+    is not strict JSON).
+    """
+    return [
+        round(float(v), 5) if math.isfinite(float(v)) else None for v in seq
+    ]
+
+
 def build_spectrum_payload(dataset: dict) -> dict:
     """Build the JSON-serializable payload for the spectrum-data-store.
 
@@ -769,17 +799,14 @@ def build_spectrum_payload(dataset: dict) -> dict:
     χ² is keyed by region_summary's `region_idx` (region_summary may be a
     subset of ll_entries — only regions with a fit). Star/pixel counts come
     from ll_hover_stats, which is kept 1:1 with ll_entries by position.
-    Non-finite χ² becomes None so the payload is strict-JSON.
+    Non-finite values become None so the payload is strict-JSON.
     """
-    def _floats(seq):
-        return [float(v) for v in seq]
-
-    wavelengths = _floats(dataset["common_w"])
+    wavelengths = _round_wavelengths(dataset["common_w"])
     payload = {
         "wavelengths": wavelengths,
-        "flux": _floats(dataset["mean_obs_s"]),
-        "fitFlux": _floats(dataset["mean_fit_s"]),
-        "resid": _floats(dataset["mean_resid_s"]),
+        "flux": _round_fluxes(dataset["mean_obs_s"]),
+        "fitFlux": _round_fluxes(dataset["mean_fit_s"]),
+        "resid": _round_fluxes(dataset["mean_resid_s"]),
         "lambdaMin": wavelengths[0],
         "lambdaMax": wavelengths[-1],
     }
@@ -832,13 +859,14 @@ def build_single_star_payload(fit_data: dict, base_dataset: dict) -> dict:
         raise ValueError("empty/invalid full-range spectrum")
     w, obs, fit = flat
     resid = obs - fit
+    wavelengths = _round_wavelengths(w)
     payload = {
-        "wavelengths": [float(x) for x in w],
-        "flux": [float(x) for x in obs],
-        "fitFlux": [float(x) for x in fit],
-        "resid": [round(float(x), 6) for x in resid],
-        "lambdaMin": float(w[0]),
-        "lambdaMax": float(w[-1]),
+        "wavelengths": wavelengths,
+        "flux": _round_fluxes(obs),
+        "fitFlux": _round_fluxes(fit),
+        "resid": _round_fluxes(resid),
+        "lambdaMin": wavelengths[0],
+        "lambdaMax": wavelengths[-1],
         # Flag so spectrum.js resets the view to the full λ-range when a
         # single-star payload arrives (the windowed mean view keeps its view).
         "fullRange": True,

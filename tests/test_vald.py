@@ -48,6 +48,20 @@ def test_parse_ignores_blank_and_short_rows(tmp_path):
     assert len(entries) == 3
 
 
+def test_parse_rejects_row_with_empty_field(tmp_path):
+    # An empty field must NOT shift later columns onto the wrong index —
+    # the row is rejected outright instead of mis-assigning Stark→Waals etc.
+    # 10 fields, one empty: the old `if p.strip()` split silently dropped
+    # the empty and parsed the remaining 9 with every later column shifted.
+    bad = ("'Fe 1',        700.50000,, 4.1034, 1.0, -1.560, 8.410, -5.270,"
+           "-7.208,  1.410, 0.103, '   2 wl:K14   2 K14 Fe            '\n")
+    p = tmp_path / "vald.txt"
+    p.write_text(VALD_SAMPLE + bad)
+    entries = parse_vald_lines(p)
+    assert len(entries) == 3
+    assert all(e["wavelength_nm"] != 700.5 for e in entries)
+
+
 def test_parse_returns_sorted_by_wavelength(tmp_path):
     p = tmp_path / "vald.txt"
     p.write_text(VALD_SAMPLE)
@@ -74,9 +88,9 @@ def _entries():
 
 def test_payload_clips_to_wavelength_range():
     p = build_vald_payload(_entries(), lambda_min=700.0, lambda_max=701.0)
-    assert len(p["lines"]) == 2
+    assert p["count"] == 2
     # sorted by wavelength
-    assert [ln["wavelength_nm"] for ln in p["lines"]] == [700.00, 700.18]
+    assert p["wavelengths"] == [700.00, 700.18]
 
 
 def test_payload_uses_parallel_arrays():
@@ -100,7 +114,7 @@ def test_payload_is_json_serializable():
 def test_payload_handles_empty_input():
     p = build_vald_payload([], lambda_min=600.0, lambda_max=900.0)
     assert p == {"count": 0, "wavelengths": [], "elements": [], "ions": [],
-                 "depths": [], "logGf": [], "excitEv": [], "lines": [],
+                 "depths": [], "logGf": [], "excitEv": [],
                  "depthMin": 0.0, "depthMax": 0.0}
 
 
