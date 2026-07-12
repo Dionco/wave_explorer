@@ -1,502 +1,168 @@
-# ASAP Line Curation Dashboard — wave_explorer Refactored Package
+# wave_explorer — ASAP Line Curation Dashboard
 
-## Overview
+A Dash app for exploring and curating the ASAP line-list regions against a
+campaign of retrieval outputs. It loads every star's `fit-data.fits` for a
+given output suffix, stacks observed/model spectra onto a common wavelength
+grid, computes per-region χ²/N statistics, and renders everything with a
+custom client-side SVG spectrum component (no Plotly) so pan/zoom, hover,
+region dragging, and drawing stay at interactive frame rates.
 
-This is a **complete architectural refactoring** of the monolithic ASAP line curation dashboard (`dash_wavelength_explorer_v2.py`) into a production-grade, modular Python package with optimized UX and cleaned-up frontend architecture.
+A static, server-less export of the app is published as a demo at
+<https://dionco.github.io/wave_explorer/>.
 
-## What Changed
+## Quick start
 
-### Phase 1: Architecture & Backend
+```bash
+cd new/obs-data-example/
+/net/vdesk/data2/cobelens/.conda/envs/asap/bin/python -m wave_explorer \
+    --suffix bic_optimal_region_filtering_v1 \
+    --line-list /path/to/targets_llist_v5.txt
+# → http://127.0.0.1:8050
+```
 
-| Aspect | Before | After |
-|--------|--------|-------|
-| **Structure** | Single 2200-line file | 15 modular files in organized package |
-| **Styling** | 300+ lines inline CSS via `_INDEX_STRING` | Extracted to `assets/styles.css` with CSS custom properties |
-| **Region Boundary Dragging** | Plotly editable shapes (laggy, ties to relayoutData) | Direct edge drag in JavaScript (no handles, zero-lag persistence) |
-| **Figure Updates** | Full rebuild on every callback → expensive | Dash `Patch()` for shapes only → minimal payload |
-| **Data Loading** | Synchronous at startup, no caching | `flask-caching` with memoization → reusable across app reloads |
-| **Callbacks** | 7 nested closures in `build_app()` | Modular, organized into logical files under `callbacks/` |
+Use the `asap` env's python directly (`conda activate` on this cluster leaves
+base python shadowing the env).
 
-### Phase 2: UX Features
+### CLI
 
-| Feature | Status | Details |
-|---------|--------|---------|
-| **Cursor-Tracking Tooltip** | ✅ Implemented | Client-side JS tracks mouse; displays Region # + χ²/N + stats at cursor |
-| **Interactive Region Adjustment** | ✅ Implemented | Drag region edges directly; updates persist to disk |
-| **Click-Drag to Add Regions** | ✅ Implemented | Draw mode + preview rect + confirmation popover |
+| Flag | Meaning |
+|------|---------|
+| `--suffix` (required) | retrieval output suffix; folders `06_retrievals/<star>/output_*_<suffix>` |
+| `--retrievals-dir` | defaults to `./06_retrievals` (or sibling `obs-data-example/06_retrievals`) |
+| `--line-list` | explicit line list; otherwise auto-detected from the runs' `config_copy.ini` majority vote (errors on a tie) |
+| `--vald-list` | VALD3 short-format list for the absorption-line overlay; defaults to the bundled `data/DionCobelens.017597` (700–1000 nm) |
+| `--grid-step` | common wavelength grid step in nm (default 0.01) |
+| `--smooth-window` | boxcar smoothing of the displayed mean spectra (default 1 = off) |
+| `--stack-teff [N]` | Teff-stack mode: show N stars (default 10) spanning the campaign's Teff range as offset spectra instead of the mean |
+| `--stack-offset` | vertical offset between stacked spectra |
+| `--host/--port/--debug/--debug-hover` | server options |
 
----
+### Keyboard shortcuts
 
-## Package Structure
+`D` toggle draw mode · `Z` undo · `X` exclude/restore selected region ·
+`Esc` clear selection · `Ctrl/⌘+S` save curated line list. Shortcuts are
+suppressed while typing in inputs and when Ctrl/Alt/Meta chords are held
+(except Ctrl+S).
+
+## What you can do
+
+- **Inspect**: mean observed vs model spectrum with residual panel, per-region
+  χ²/N shading, hover tooltip with per-region stats, χ² histogram, worst-regions
+  table, and a full-range heatstrip that doubles as a pan/zoom minimap.
+  Double-click the spectrum to reset the view.
+- **Curate**: drag region edges directly in the plot, exclude/restore regions
+  (from plot, table, or heatstrip), draw brand-new regions (D), undo (Z),
+  then save — writes a timestamped curated line list next to the original via
+  atomic replace. Pending (unsaved) edits are previewed everywhere; table rows
+  with pending bounds mark their (stale) χ² with `*`.
+- **Focus a star**: the star dropdown switches the plot to a single star's
+  full-wavelength-range observed + model spectrum. The full-range model is
+  computed on demand by `full_model/` (see below) and cached as
+  `model-full.fits` in the star's output folder.
+- **VALD overlay**: toggleable absorption-line markers filtered by central
+  depth, from the bundled VALD list.
+
+## Architecture
 
 ```
 wave_explorer/
-├── __init__.py                 # Package entry point
-├── __main__.py                 # CLI entry point for python -m wave_explorer
-├── app.py                      # App factory & argparse CLI
-├── theme.py                    # Color palette, typography, formatting helpers
-├── data_processing.py          # All pure-compute functions (loading, chi2, residuals)
-├── figure_builder.py           # Plotly figure construction
-├── layout.py                   # UI component builders & assembly
-│
+├── app.py              # app factory + argparse CLI
+├── data_processing.py  # dataset build: FITS loading, common grid, χ², payloads
+├── layout.py           # header/heatstrip/histogram/stats/table + dcc.Stores
+├── theme.py            # palette + χ² tier colors/labels
+├── vald.py             # VALD3 short-format parser + overlay payload
+├── stack_select.py     # Teff-stack star selection
 ├── callbacks/
-│   ├── __init__.py             # Orchestrator: register_all_callbacks()
-│   ├── candidate.py            # Region range selection, zoom, manual input
-│   ├── regions.py              # Line-list drag updates + persistence
-│   ├── session.py              # Session management (add, clear, export)
-│   └── table.py                # Table filtering by element
-│
-└── assets/
-    ├── styles.css              # All CSS (extracted from _CSS string)
-    ├── drag_handles.js         # SVG overlay + drag logic + draw mode
-    └── tooltip.js              # Cursor-tracking tooltip + hover logic
+│   ├── candidate.py    # region selection, stats panel, table→plot navigation
+│   ├── regions.py      # drag/exclude/draw/delete/undo/save (pending-changes model)
+│   ├── star_focus.py   # star dropdown → full-range model via subprocess driver
+│   └── table.py        # worst-regions table refresh
+├── assets/             # spectrum.js (SVG renderer), heatstrip.js, keyboard.js,
+│   │                   # styles.css, fonts/ (self-hosted woff2)
+├── full_model/         # standalone full-range model driver (see below)
+├── scripts/
+│   ├── export_demo.py      # build the static demo payloads + site/
+│   └── publish_gh_pages.sh # publish site/ to gh-pages (git commit-tree)
+└── site/               # committed static demo (GitHub Pages)
 ```
 
----
+**Data flow.** `build_dataset()` runs once at startup: it discovers the output
+folders, loads every `fit-data.fits` into `fit_data_cache`, interpolates all
+stars onto a common grid (`linspace`, float32), and computes per-region χ²
+summaries. Stars with fewer than 100 overlapping finite pixels are dropped
+from *both* the mean stack and the χ² sample (they are reported at startup),
+so plot and statistics always describe the same sample.
 
-## Installation & Running
+The spectrum itself is **not** a Dash figure: `build_spectrum_payload()`
+serializes rounded wavelength/flux/model/residual arrays (non-finite → `null`
+gaps) into `spectrum-data-store`, and a clientside callback feeds that plus
+the live region state (`ll-entries-store`, `pending-changes-store`,
+`selected-region-store`, draw mode, goto ticks, VALD stores) into
+`window.WaveExplorer.sync()` in `assets/spectrum.js`, which renders SVG
+directly. Static layers (grid, data paths, region bands, axes) are only
+rebuilt when their inputs change; the crosshair/hover layer updates
+independently per pointer frame, and all data scans binary-search the view
+window. Edits flow back through small stores (`drag-result-store`,
+`draw-region-store`) into server callbacks that maintain a pending-changes
+dict plus an O(changed-entry) undo history, and persist on explicit save.
 
-### Prerequisites
+## full_model — on-demand full-range model spectra
+
+`fit-data.fits` stores the model only inside the fitted line-list windows.
+`full_model/` reconstructs the model over the star's full observed range by
+re-running ASAP `gen_spec` at the best-fit parameters from `results.txt`,
+loading only the ~16 grid corner nodes bracketing (Teff, logg, [M/H], [α/Fe])
+per B-component via a temp directory of symlinks (exact — bit-identical to the
+full grid, see `full_model/SPIKE_findings.md`). Fitted veiling is applied when
+the run fit it.
+
+It runs as a subprocess of the Dash app (keeps ASAP + grid memory out of the
+server): `python -m wave_explorer.full_model <output_folder>` — also usable
+standalone to pre-warm stars. The result is cached as `model-full.fits`
+(atomic write) and invalidated when `results.txt` or `config_copy.ini` is
+newer. Interpreter resolution: the app's own python if it can import ASAP,
+else the asap env's python, else `conda run -n asap`.
+
+Paths are overridable via `WAVE_EXPLORER_ASAP_PATH` (ASAP checkout) and
+`WAVE_EXPLORER_GRID_PATH` (model grid); defaults point at this cluster's
+locations.
+
+**Known limitation:** the star-focus callback computes synchronously and can
+hold a Dash worker for up to 600 s on a cold star (~1 min typical). Concurrent
+requests for the same star are deduplicated with a per-folder lock. Moving to
+`background=True` requires installing `diskcache` and wiring a
+`DiskcacheManager`.
+
+## Static demo (site/)
+
+`scripts/export_demo.py` exports the payloads (default 730–1000 nm window,
+`--only-stars` to restrict the star set) plus a JS shim so the *same*
+`spectrum.js` runs without a server; the result is committed under `site/` and
+published with `scripts/publish_gh_pages.sh` (uses `git commit-tree`; Pages
+builds can take ~8 min). Parity between the Python and in-browser χ² recompute
+is gated by `tests/test_export_demo.py` and `tests/demo_compute.test.mjs`.
+
+## Testing
 
 ```bash
-conda activate asap
-pip install flask-caching  # Already installed via requirements
+/net/vdesk/data2/cobelens/.conda/envs/asap/bin/python -m pytest tests/ full_model/tests/ -q
+node tests/demo_compute.test.mjs
 ```
 
-### Launch the App
-
-```bash
-# Minimal (inferred paths)
-cd new/obs-data-example/
-python -m wave_explorer --suffix ds_leo
-
-# Explicit paths
-python -m wave_explorer \
-  --suffix ds_leo \
-  --retrievals-dir /path/to/06_retrievals \
-  --line-list /path/to/custom_ll.txt \
-  --host 0.0.0.0 \
-  --port 8050 \
-  --debug
-
-# Show help
-python -m wave_explorer --help
-```
-
-### Output
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ASAP Line Curation Dashboard
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Suffix         : ds_leo
-  Retrievals dir : /path/to/06_retrievals
-  Stars          : 42
-  λ range        : 1200.50 – 1800.75 nm
-  Line list      : /path/to/targets_line_list_v2.txt
-  LL regions     : 150 (total), 145 (with χ²)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  → http://127.0.0.1:8050
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
----
-
-## Full-range single-star model (`model-full.fits`)
-
-By default the spectrum panel shows the **mean** observation/fit across all
-stars, restricted to the already-fitted line-list windows. To explore lines
-*outside* those windows for one star, use the **star selector** dropdown in the
-spectrum toolbar.
-
-### What it does
-
-- Picking a star focuses the plot on that single star and shows its ASAP model
-  spectrum over the **full observed wavelength range** (every echelle order),
-  not just the fitted windows. Selecting **"All stars (mean)"** restores the
-  mean view instantly.
-- The full-range model lives in `model-full.fits` in the star's `output_*`
-  folder, a sibling of `fit-data.fits`. HDUs: `WVL / FLUX / ERROR / FIT /
-  FITNOMAG` (2D, `n_orders × n_pix`). There is **no `FLUXFIT`/`IDXTOFIT` HDU** —
-  fitted regions are still marked via the line-list overlay, not via the FITS
-  (the PRIMARY header carries `FITMARK = linelist`). `FLUX` keeps the real-obs
-  NaNs; `FIT`/`FITNOMAG` are NaN wherever `FLUX` is NaN.
-
-### Auto-compute on focus + caching
-
-Focusing a star auto-computes `model-full.fits` if it is missing or older than
-the run's `results.txt`, then caches it next to `fit-data.fits`. Computation
-runs as a **subprocess** (the driver below) so ASAP + the model grid stay out of
-the Dash process; a small spinner appears in the toolbar while it runs.
-Re-selecting the same star is an instant cache hit. A cold compute reads a tiny
-"corner" grid (only the nodes bracketing the best-fit Teff/logg/[M/H]/[α/Fe])
-and runs `gen_spec` over the full orders — roughly a minute; subsequent loads
-are immediate.
-
-### Pre-warming from the CLI
-
-To compute the cache ahead of time (e.g. for a whole campaign), run the driver
-directly:
-
-```bash
-# writes model-full.fits into the star's output folder (skips if cache is fresh)
-conda run -n asap python -m wave_explorer.full_model \
-    06_retrievals/<star>/output_<star>_<suffix>
-
-# force recompute even if a fresh cache exists
-conda run -n asap python -m wave_explorer.full_model <output_folder> --force
-
-# write the cache to a separate directory instead of the output folder
-# (useful when the output folder is read-only); filename is
-# <star>_model-full.fits in that dir
-conda run -n asap python -m wave_explorer.full_model <output_folder> \
-    --cache-dir /scratch/full_models
-
-# override the model grid path (the config's pathToGrid can be stale)
-conda run -n asap python -m wave_explorer.full_model <output_folder> \
-    --grid-path /net/vdesk/data2/cobelens/MRP/new/grid_models/hdf5-narval-full/
-```
-
-Cache validity is mtime-based: the cache is reused when it is newer than the
-run's `results.txt`, unless `--force` is given.
-
-### Driver design note (from the verification spike)
-
-The driver (`wave_explorer/full_model/`) reuses ASAP's **unmodified** `gen_spec`.
-Instead of the full grid it loads a 2×2×2×2 "corner" sliced to the nodes
-bracketing the best-fit atmospheric parameters — verified **bit-identical**
-(max abs diff 0.0) to the full-grid model, because the interpolator only ever
-touches the bracketing nodes. `load_obs` returns 2D per-order arrays
-`(n_orders, n_pix)`, so "full-order regions" are just those rows directly (no
-order discovery needed). The corner load reuses ASAP's own `load_grid` against a
-temp dir that symlinks only the bracketing grid files, so ASAP builds `grid_n`
-in the correct dimension order itself. The built-in oracle test
-(`full_model/tests/test_driver_oracle.py`) gates correctness: the full-range
-model, restricted back to the fitted windows, must match `fit-data.fits` `FIT`.
-See `wave_explorer/full_model/SPIKE_findings.md` for the full evidence.
-
----
-
-## Architecture Decisions
-
-### 1. CSS via Custom Properties
-
-**Why**: Remove Python f-string interpolation from CSS. Python strings are harder to maintain and don't support CSShot reloading.
-
-**How**: All color values in `assets/styles.css` declared in `:root`:
-```css
-:root {
-  --clr-bg: #0d1117;
- --clr-cyan: #58d1eb;
-  --mono-font: 'Space Mono', ...;
-}
-
-body { background: var(--clr-bg); }
-```
-
-### 2. Direct Edge Dragging (NOT Plotly Editable Shapes)
-
-**Why**: Plotly's `editable=True` shapes send continuous `relayoutData` events on every pixel move -> network latency visible in UI. Direct edge drag stays entirely client-side until release.
-
-**How**: 
-
-1. **Initialization** (`drag_handles.js`):
-   - Keep `ll-entries-store` mirrored in JavaScript
-   - Detect nearest region edge in pixel space using Plotly axis transforms
-
-2. **Dragging**:
-   - `mousedown` near a region boundary edge -> capture `region_idx` and `bound`
-   - `mousemove` -> compute new nm from cursor x, clamp by `MIN_GAP_NM`, and preview via shape relayout
-   - `mouseup` -> write `{region_idx, bound, new_x_nm}` to `drag-result-store` (dcc.Store)
-
-3. **Server Update**:
-   - Callback listens on `drag-result-store` → updates `ll-entries-store` → saves to disk via `save_line_list()`
-
-### 3. Dash Patch() for Figure Updates
-
-**Why**: Rebuild of full `base_fig` + all traces on every slider change is expensive (200+ KB payload).
-
-**How**:
-- Build `base_fig` once at app startup (cached in closure)
-- Candidate range slider only triggers `compute_custom_region_chi2()` → stats DOM update
-- Figure update uses Dash's `Patch()` to **only update layout.shapes**:
-  ```python
-  from dash import Patch
-  fig_patch = Patch()
-  fig_patch["layout"]["shapes"] = _ll_shapes(ll_entries) + _cand_shapes(lo, hi)
-  return stats, fig_patch, status_txt
-  ```
-- Result: ~100 bytes instead of ~100 KB per update
-
-### 4. Flask-Caching SimpleCache
-
-**Why**: `build_dataset()` takes ~5–10 seconds. Multiple users or app reloads shouldn't re-compute.
-
-**How**:
-```python
-from flask_caching import Cache
-
-cache = Cache(config={"CACHE_TYPE": "SimpleCache"})
-cache.init_app(app.server)
-
-@cache.memoize()
-def build_dataset(...):
-    # Only runs once per unique combination of parameters
-    ...
-```
-
-**Note**: SimpleCache is in-memory; resets on server restart. For persistence, use `FileSystemCache`.
-
-### 5. Client-Side Tooltip (Pure JS + dcc.Store)
-
-**Why**: Avoid server round-trip latency on every hover. All stats pre-computed and serialized.
-
-**How**:
-1. At layout build time, `ll_hover_stats` serialized → `ll-stats-store`
-2. `tooltip.js`:
-   - Global `mousemove` listener tracks `window.__cx, window.__cy`
-   - On Plotly hover, extract `customdata[0]` (region index)
-   - Look up stats in `window.llStatsStore`
-   - Render tooltip HTML; position at cursor
-3. Zero server round-trips; 60 FPS cursor tracking
-
----
-
-## Data Flow
-
-### 1. Initialization
-
-```
-CLI args (--suffix, --line-list, ...)
-   ↓
-app.py / main()
-   ↓
-build_dataset() [cached]
-   └─→ loads FITS, computes chi2 per region, creates ll_hover_stats
-   ↓
-create_app()
-   ├─→ build_base_figure() [built once, reused]
-   ├─→ build_layout(base_fig) → dcc.Graph + SVG overlay + stores
-   └─→ register_all_callbacks()
-```
-
-### 2. User Interaction: Candidate Range Selection
-
-```
-User moves slider → "candidate-range" Input fires
-   ↓
-Callback: update_stats_and_figure()
-   ├─→ compute_custom_region_chi2() → dict(median_chi2, p16, p84, n_stars, med_npix)
-   ├─→ compute_residual_metrics() → dict(mean_resid, mean_abs_resid, p95, norm)
-   ├─→ render_stats(chi2, resid, lo, hi) → stats DOM
-   └─→ Patch() figure.layout.shapes
-   ↓
-UI updates: stats panel + candidate range highlight on chart
-```
-
-### 3. User Interaction: Drag a Region Boundary
-
-```
-User mousedown near a region edge (drag_handles.js)
-   ├─→ Record startNm, regionIdx, bound ("lower"/"upper")
-   │
-   ├─→ mousemove(dx) → compute new nm
-   │
-   └─→ mouseup → write to drag-result-store
-
-Server callback: update_ll_bounds_from_drag()
-   ├─→ Read {region_idx, bound, new_x_nm} from drag-result-store
-   ├─→ Update ll-entries-store data
-   └─→ save_line_list(Path(...), updated)
-
-Layout: figure patches shapes via separate callback (not yet implemented; TODO)
-```
-
-### 4. User Interaction: Draw New Region
-
-```
-User clicks "Draw Region" button → draw mode enabled
-   ↓
-User click-drags on graph:
-   ├─→ drag_handles.js: mousedown/move/up
-   ├─→ Render preview amber rect
-   ├─→ On release: show #draw-confirm-popover
-   │
-   └─→ User clicks "Accept":
-       ├─→ Write {lo, hi} to draw-region-store
-       └─→ Callback: Input("draw-region-store", "data")
-           → Output("candidate-range", "value")
-           → slider updates → stats recalculate
-```
-
----
-
-## Key Files Explained
-
-### theme.py
-- Color palette as a dict `C{}`
-- Utility functions: `chi2_color(v)`, `chi2_label(v)`, `_fmt(v)`
-- Typography constants: `MONO`, `SANS`
-
-### data_processing.py
-- Pure compute: `discover_output_folders()`, `flatten_full_spectrum()`, `interp_to_common_grid()`, etc.
-- Main entry: `build_dataset()` → returns dict with all keys needed by layout & callbacks
-- No side effects (except `save_line_list()` which persists edits)
-
-### figure_builder.py
-- `_ll_shapes()` → list of Plotly rect shapes (NO draggable handles anymore)
-- `_cand_shapes()` → amber candidate region highlight  
-- `_add_region_hover_overlays()` → transparent Scatter traces for hover detection
-- `build_base_figure()` → main subplot figure (built once)
-
-### layout.py
-- `build_header()`, `build_candidate_panel()`, `build_stats_panel()`, `build_table_panel()`, `build_session_panel()`
-- `render_stats()` → DOM for live statistics
-- `build_layout()` → main layout (includes SVG overlay div + stores + popover)
-
-### callbacks/*.py
-- Each file registers 1–2 related callbacks
-- `callbacks/__init__.py`: `register_all_callbacks()` orchestrator
-- `candidate.py`: range selection (zoom, manual, slider) + stats update
-- `regions.py`: drag updates to line-list entries
-- `session.py`: add/clear/export candidate regions
-- `table.py`: element filter for "Worst Regions" table
-
-### assets/styles.css
-- Complete CSS; includes all theme colors via custom properties
-- No Python logic; static file served by Dash
-
-### assets/drag_handles.js
-- Detects nearest region edge from cursor position (no handle elements)
-- On drag: updates Plotly region span in real-time preview
-- On release: writes to `drag-result-store`
-- Draw mode: click-drag → preview rect → confirmation popover
-
-### assets/tooltip.js
-- `window.dash_clientside.show_region_tooltip()` — registered callback function
-- On Plotly hover: extract `customdata[0]` (region idx) → look up stats
-- Position tooltip at cursor; hide on unhover
-
----
-
-## Testing & Debugging
-
-### 1. Import Test
-```bash
-python -c "import wave_explorer; print('✓')"
-```
-
-### 2. CLI Help
-```bash
-python -m wave_explorer --help
-```
-
-### 3. Dry Run (Find Retrieval Folder)
-```bash
-cd new/obs-data-example/
-python -m wave_explorer --suffix ds_leo 2>&1 | head -20
-```
-(Will print discovered paths and exit if data not found.)
-
-### 4. Debug Mode (Verbose Logging)
-```bash
-python -m wave_explorer --suffix ds_leo --debug 2>&1
-```
-
-### 5. Hover Debug Mode (Show Hitboxes)
-```bash
-python -m wave_explorer --suffix ds_leo --debug-hover
-```
-(Renders filled regions in hover panel; shows `customdata` in debug log.)
-
----
-
-## Migration from v2
-
-| Feature | v2 | wave_explorer | Status |
-|---------|----|----|--------|
-| Main spectrum plot | ✓ | ✓ | Same core figure |
-| Line-list background regions | ✓ | ✓ | Shapes only (no drag lines) |
-| Candidate region selection | ✓ | ✓ | Improved: slider + zoom + manual |
-| Worst regions table | ✓ | ✓ | Identical; filtering added |
-| Session export | ✓ | ✓ | Identical format |
-| **Drag region boundaries** | ✗ (only edges) | ✓ | **New** |
-| **Cursor tooltip stats** | ✗ | ✓ | **New** |
-| **Draw new regions** | ✗ | ✓ | **New** (modal confirmation) |
-| **Patch figure updates** | ✗ | ✓ | **New** (performance) |
-| **Client-side drag** | ✗ | ✓ | **New** (zero-lag) |
-
-### v2 Still Available
-`dash_wavelength_explorer_v2.py` is **untouched** and remains fully functional. Use it as a fallback if issues arise.
-
----
-
-## Known Limitations & TODOs
-
-### Current Limitations
-1. **Draw-region callback incomplete**: The `draw-region-store` input → `candidate-range` output callback is defined but not yet tested end-to-end.
-2. **Drag feedback**: While dragging, the Plotly shape doesn't update in real-time (pure JS preview only). This is intentional to keep JS simple.
-3. **Multi-user scaling**: SimpleCache is in-memory, per-process. For gunicorn/multi-worker deployment, use FileSystemCache or external cache (Redis).
-
-### TODOs for Future
-- [ ] Add live Plotly shape update during drag (currently JS-only)
-- [ ] Implement real-time figure patching callback for drag completions
-- [ ] Add undo/redo for region edits
-- [ ] Implement "Add region to line list" permanently (currently session-only)
-- [ ] Multi-touch support for tablets
-- [ ] Dark/light mode toggle (CSS custom props ready)
-
----
-
-## Performance Characteristics
-
-| Operation | Before | After | Improvement |
-|-----------|--------|-------|-------------|
-| Slider move | 500ms–1s (full rebuild) | ~50ms (Patch only) | 10× |
-| Boundary drag | Visible lag (relayoutData) | 60 FPS smooth | ∞ |
-| Hover tooltip | N/A | ~0ms (all JS) | N/A |
-| App startup | ~5–10s | ~5–10s (cached) | Same |
-| App reload #2 | ~5–10s | ~100ms (cached) | 50× |
-
----
-
-## Troubleshooting
-
-### Issue: "No output folders for suffix 'X' found"
-**Solution**: Check `06_retrievals/` contains subdirectories with `output_*_<suffix>` folders.
-
-### Issue: "Line list not found"
-**Solution**: Use `--line-list /explicit/path/to/file.txt`
-
-### Issue: Boundary drag does not start
-**Solution**: Start drag directly on a region edge and check browser console for JS errors.
-
-### Issue: Tooltip doesn't follow cursor
-**Solution**: Check `assets/tooltip.js` is served (Network tab in DevTools). Verify `ll-stats-store` is populated.
-
-### Issue: Import error "ModuleNotFoundError: flask_caching"
-**Solution**: `pip install flask-caching` in conda environment.
-
----
-
-## Contributing
-
-When adding features:
-1. Keep callback logic in `callbacks/`
-2. Keep pure functions in `data_processing.py`
-3. Keep UI building in `layout.py`
-4. Update CSS via `assets/styles.css` (not inline)
-5. Update theme constants in `theme.py`
-
----
-
-## License
-
-Inherits from ASAP project.
-
----
-
-**Refactored**: March 2026  
-**Original Author**: ASAP Team  
-**Refactoring Architect**: Expert Python/Dash/UX Engineer  
-**Status**: Production-ready with advanced UX features  
+The suite exercises payload builders, callback logic (via direct function
+calls), the VALD parser, teff-stack selection, the full_model driver against a
+real star (oracle test asserts parity with `fit-data.fits` in fitted windows),
+and the demo export parity gate. `tests/test_app_smoke.py` builds the real v2
+dataset and constructs the app.
+
+## Known limitations
+
+- Single-user tool: independent Dash callbacks read-modify-write the pending
+  stores, so two browser sessions editing simultaneously can lose one
+  session's staged (unsaved) edit. Saves themselves are atomic and
+  timestamped to the microsecond.
+- χ² shown for a region whose bounds have pending edits is the last computed
+  value (marked `*` in the table) until saved/recomputed.
+- The full-range model's continuum is normalized per order, so line depths in
+  unfitted zones are guidance, not fitted measurements; orders below 4001 Å
+  are dropped (no grid coverage).
