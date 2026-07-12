@@ -16,8 +16,11 @@
 
   function clickIfLive(id) {
     var el = document.getElementById(id);
-    // offsetParent === null when the element is display:none.
-    if (el && !el.disabled && el.offsetParent !== null) {
+    // getClientRects() is empty when the element (or an ancestor) is
+    // display:none — unlike offsetParent, this also works for elements
+    // inside position:fixed containers.
+    if (el && !el.disabled && el.isConnected &&
+        el.getClientRects().length > 0) {
       el.click();
       return true;
     }
@@ -40,6 +43,14 @@
     if (isTyping(e)) return;
     var k = e.key;
 
+    // Ctrl/⌘ + S is the only modified shortcut we own.
+    if ((k === "s" || k === "S") && (e.metaKey || e.ctrlKey) && !e.altKey) {
+      if (clickIfLive("save-changes-btn")) e.preventDefault();
+      return;
+    }
+    // Never hijack other browser/OS chords (Ctrl+D bookmark, Ctrl+Z, …).
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
     if (k === "d" || k === "D") {
       if (clickIfLive("draw-mode-toggle")) e.preventDefault();
     } else if (k === "Escape") {
@@ -51,8 +62,6 @@
       if (!clickIfLive("selected-exclude-btn")) {
         clickIfLive("selected-restore-btn");
       }
-    } else if ((k === "s" || k === "S") && (e.metaKey || e.ctrlKey)) {
-      if (clickIfLive("save-changes-btn")) e.preventDefault();
     }
   }
 

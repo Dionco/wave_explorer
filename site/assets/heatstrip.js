@@ -14,6 +14,7 @@
 
   var rafPending = false;
   var dragging = false;
+  var dragPointerId = null;   // pointer that owns the active drag
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -57,7 +58,11 @@
     var r = window.WaveExplorer.getView();
     if (!b || !r) return;
     var rect = strip.getBoundingClientRect();
+    // A hidden/collapsed strip has width 0 → frac would be NaN and poison
+    // the shared view state through setView. Bail out instead.
+    if (!(rect.width > 0)) return;
     var frac = clamp((clientX - rect.left) / rect.width, 0, 1);
+    if (!isFinite(frac)) return;
     var lam = b.lmin + frac * b.span;
     var viewSpan = Math.min(b.span, r.max - r.min);
     var lo = lam - viewSpan / 2;
@@ -72,16 +77,20 @@
     var strip = document.getElementById("heatstrip");
     if (!strip) return;
     strip.addEventListener("pointerdown", function (e) {
+      if (dragging) return; // a second pointer must not steal the drag
       dragging = true;
+      dragPointerId = e.pointerId;
       try { strip.setPointerCapture(e.pointerId); } catch (err) {}
       jumpToClientX(e.clientX);
       e.preventDefault();
     });
     strip.addEventListener("pointermove", function (e) {
-      if (dragging) jumpToClientX(e.clientX);
+      if (dragging && e.pointerId === dragPointerId) jumpToClientX(e.clientX);
     });
     function endDrag(e) {
+      if (dragging && e.pointerId !== dragPointerId) return;
       dragging = false;
+      dragPointerId = null;
       try { strip.releasePointerCapture(e.pointerId); } catch (err) {}
     }
     strip.addEventListener("pointerup", endDrag);
@@ -101,12 +110,18 @@
     }
   }
 
+  var initAttempts = 0;
+
   function init() {
     // Dash renders the layout client-side after this script runs, so
     // #heatstrip may not exist yet — poll until it does before binding
     // the click/drag listeners (setupStrip does not retry on its own).
     var strip = document.getElementById("heatstrip");
     if (!strip) {
+      if (++initAttempts > 100) {
+        console.warn("wave-explorer heatstrip: #heatstrip never appeared; giving up");
+        return;
+      }
       setTimeout(init, 100);
       return;
     }
